@@ -343,14 +343,14 @@ Once both servers are running (below), open `http://localhost:3000`.
 | HTTP client | **httpx 0.27** | Only used for the optional assistant |
 | Intent model | **scikit-learn 1.9** | TfidfVectorizer + LogisticRegression, cross-validated |
 | Fuzzy matching | **RapidFuzz 3.14** | Item and category resolution with ambiguity gating |
-| Spelling repair | **SymSpellPy 6.10** | Unknown-token repair against an 82,765-word English dictionary plus the business's own vocabulary |
+| Spelling repair | **SymSpellPy 6.10** | Unknown-token repair against an 82,834-word English dictionary plus the business's own vocabulary |
 | Storage | **SQLite** (standard library) | Inventory, perks, decisions, profile, and everything learned |
-| Frontend language | **TypeScript 5.5** | |
+| Frontend language | **TypeScript 5.9** | |
 | Frontend framework | **Next.js 14 (App Router)** + **React 18** | Client components, no SSR data fetching |
 | Icons | **lucide-react** | |
 | Styling | **Hand-written CSS** | One stylesheet, CSS custom properties, no framework |
 | Assistant (optional) | **OpenRouter** free models | `httpx`, JSON mode, model fallback chain |
-| Tests | **pytest 8.4** + FastAPI `TestClient` | 72 tests |
+| Tests | **pytest 8.4** + FastAPI `TestClient` | 73 tests |
 
 There is no vector database, no embedding model and no container in the loop. Retrieval is TF-IDF
 over a corpus built per request, which keeps the whole product installable offline and its behaviour
@@ -498,7 +498,7 @@ cd backend
 .venv\Scripts\python.exe -m pytest tests -q     # or: python -m pytest tests -q
 ```
 
-**72 tests, all passing.** The suite runs against a scratch database and with the network assistant
+**73 tests, all passing.** The suite runs against a scratch database and with the network assistant
 switched off, so it is deterministic and fast (~100s, most of it training).
 
 Beyond the original floor, planner and HTTP-contract tests, the suite asserts the properties this
@@ -523,6 +523,8 @@ project is actually about:
   questions answer without being sent back**, so the two behaviours are pinned down in both directions
 - a clarifying answer is presented as one — its own headline, no misleading action buttons
 - an assistant-about intent has to be *earned* by a word that belongs to it
+- the sector's own vocabulary is **pluralised correctly** ("5 batches", not "5 batchs"),
+  checked against each sector's item label rather than the default preset alone
 
 ## What leaves your machine
 

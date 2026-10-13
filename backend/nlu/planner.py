@@ -114,7 +114,25 @@ def _value_at_risk(row: dict[str, Any]) -> float:
 
 
 def _plural(count: int, singular: str, plural: str | None = None) -> str:
-    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+    """Pluralise a count for owner-facing prose.
+
+    Naively appending ``s`` rendered the coffee preset as "5 batchs", because
+    the sector's item label is *Batch*. Words ending in a sibilant take ``-es``
+    and a consonant plus ``y`` takes ``-ies``, so the rule lives here instead of
+    relying on every caller to remember the plural of its own label.
+    """
+    if count == 1:
+        return f"{count} {singular}"
+    if plural:
+        return f"{count} {plural}"
+    lower = singular.lower()
+    if lower.endswith(("s", "x", "z", "ch", "sh")):
+        word = f"{singular}es"
+    elif lower.endswith("y") and len(singular) > 1 and lower[-2] not in "aeiou":
+        word = f"{singular[:-1]}ies"
+    else:
+        word = f"{singular}s"
+    return f"{count} {word}"
 
 
 # ---------------------------------------------------------------------------

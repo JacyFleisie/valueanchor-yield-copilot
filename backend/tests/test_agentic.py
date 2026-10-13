@@ -17,6 +17,7 @@ from nlu import IntentEngine, build_lexicon
 from nlu.assistant import CopilotAssistant
 from nlu.dataset import INTENT_LABELS
 from nlu.knowledge import GLOSSARY, KnowledgeBase
+from nlu.planner import plan as plan_answer
 
 
 @pytest.fixture(scope="module")
@@ -394,3 +395,36 @@ def test_history_restores_the_whole_conversation_not_just_the_prose(client):
     assert [turn["Question"] for turn in turns][-1] == "what should i bundle?"
     assert turns[-1]["Payload"]["headline"], "a restored turn keeps what made it useful"
     assert client.get("/api/copilot/history", params={"sessionId": "nobody"}).json()["turns"] == []
+
+
+def test_the_owners_vocabulary_is_pluralised_correctly(context):
+    """The coffee preset labels a line a "Batch", so prose must not say "batchs".
+
+    The label comes from the sector registry, not from a fixed word, so the
+    plural has to be derived rather than hard-coded. Checked against every
+    sector's own label, because this is exactly the kind of thing that works for
+    the default preset and breaks for the one nobody tested.
+    """
+    from nlu.planner import _plural
+
+    assert _plural(5, "batch") == "5 batches"
+    assert _plural(2, "batch") == "2 batches"
+    assert _plural(1, "batch") == "1 batch"
+    assert _plural(3, "box") == "3 boxes"
+    assert _plural(4, "class") == "4 classes"
+    assert _plural(2, "slot") == "2 slots"
+    assert _plural(6, "departure") == "6 departures"
+    # An explicit plural still wins, so callers can override the rule.
+    assert _plural(9, "batch", "batches") == "9 batches"
+
+    # And the live coffee answer really does read correctly.
+    reply = plan_answer(
+        context["engine"].parse("how is today going?"),
+        profile=context["profile"],
+        rows=context["rows"],
+        history=context["history"],
+        perks=context["perks"],
+        sectors=app_module.SECTORS,
+    )
+    prose = " ".join([reply.answer, reply.headline, reply.meaning or ""] + [item.get("label", "") for item in reply.key_numbers])
+    assert "batchs" not in prose, prose
