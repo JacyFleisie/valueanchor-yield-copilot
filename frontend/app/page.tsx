@@ -65,6 +65,17 @@ export default function Home() {
   // tab - is handed to the one chat rather than opening a second conversation.
   const [queued, setQueued] = useState<{ text:string; nonce:number } | null>(null)
   const queue = (text:string) => setQueued({ text, nonce: Date.now() })
+  // The whole product is about what lapses before close, so a stale date in the
+  // header would undercut it. Set after mount so the server and client render the
+  // same markup and hydration stays quiet.
+  const [clock, setClock] = useState<{ day:string; greeting:string } | null>(null)
+  useEffect(() => {
+    const now = new Date()
+    setClock({
+      day: now.toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long', year:'numeric' }).toUpperCase(),
+      greeting: now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening',
+    })
+  }, [])
 
   const money = (value:number) => `${profile?.currencySymbol ?? 'R'}${value.toLocaleString('en-ZA', { maximumFractionDigits: 0 })}`
   const atRisk = items.filter(item => item.riskStatus !== 'healthy')
@@ -165,7 +176,7 @@ export default function Home() {
     <section className="content">
       <header>
         <button className="mobile-menu" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><Menu size={20}/></button>
-        <div><p className="eyebrow">MONDAY, OCTOBER 14, 2024</p><h1>Good morning, Alex <span>✦</span></h1></div>
+        <div><p className="eyebrow">{clock?.day ?? '\u00a0'}</p><h1>{clock?.greeting ?? 'Welcome back'}, Alex <span>✦</span></h1></div>
         <div className="header-actions"><button className="icon-button" aria-label="Search"><Search size={18}/></button><button className="icon-button" aria-label="Notifications"><Bell size={18}/><i/></button><div className="avatar">AM</div></div>
       </header>
 

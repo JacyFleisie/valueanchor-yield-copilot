@@ -219,7 +219,7 @@ by deterministic code. The model is never asked to police itself on the one ques
 would be most embarrassing, and off-topic text never leaves the machine.
 
 **2. A lexical off-topic guard.**
-Fourteen intents means a stray noun can score just highly enough to be taken seriously. So a curated
+Fifteen intents means a stray noun can score just highly enough to be taken seriously. So a curated
 list of cues that cannot belong to this trade — `medical`, `weather`, `soccer`, `python`, `election`,
 `bitcoin`, `horoscope`, … — forces an off-topic reading *before classification is consulted*. It can
 only ever turn a business reading into a refusal, never the other way round. Words that could
