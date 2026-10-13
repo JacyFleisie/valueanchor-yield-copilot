@@ -1,0 +1,25 @@
+# Secrets. The OpenRouter key lives here and must never be committed.
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/.venv/
+.venv/
+
+# The generated workspace database. Recreated on first run.
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs and local scratch
+logs/
+*.log
