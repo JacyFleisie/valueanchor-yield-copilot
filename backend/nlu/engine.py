@@ -91,7 +91,37 @@ HIGH_CONF = 0.70
 # wrong one. Intents about the assistant itself are exempt: "what can you do" is a
 # complete question with no subject in it.
 MIN_CONFIDENCE_WITHOUT_SUBJECT = 0.85
-SUBJECTLESS_INTENTS = {"greeting", "capabilities", "sector_info", "explain_term", "out_of_scope"}
+# Intents whose answer does not depend on which line is named. "What have I
+# approved so far" is a complete question about the record, and asking the owner
+# to name an item first would be asking them to repeat themselves.
+SUBJECTLESS_INTENTS = {
+    "greeting", "capabilities", "sector_info", "explain_term", "out_of_scope",
+    "decision_history", "capacity_status",
+}
+
+# An intent about the assistant itself needs no subject, which is why it is
+# exempt above - but only when the sentence actually asks about it. "Handle it"
+# and "fix this" are vague enough that the classifier can land on Sectors with
+# 35% confidence, and answering "you are running a coffee shop" is a confident
+# answer to a question nobody asked. Each of these intents therefore has to be
+# earned by a word that belongs to it, or the engine asks instead.
+MISREAD_GUARDS: dict[str, tuple[str, ...]] = {
+    "sector_info": (
+        "sector", "sectors", "industry", "industries", "business", "businesses", "preset",
+        "presets", "kind of", "kinds of", "type of", "types of", "support", "switch", "other",
+    ),
+    "capabilities": (
+        "help", "able", "capabilit", "feature", "what can you", "what do you do", "what else",
+        "who are you", "how do you", "what should i ask", "questions",
+    ),
+    "greeting": ("hi", "hey", "hello", "morning", "afternoon", "evening", "howzit", "greetings", "good day"),
+    "explain_term": (
+        "mean", "means", "explain", "define", "definition", "understand", "stand for",
+        "in plain", "simple terms",
+    ),
+}
+# Short cues like "hi" are matched on word boundaries so "this" cannot be a greeting.
+WORD_CUE_RE = re.compile(r"\b(?:hi|hey|hello|morning|afternoon|evening|greetings|day|other)\b")
 
 # Questions that are plainly not about this business, whatever the classifier
 # thinks. A shop owner does not ask a yield copilot for a headache remedy or a
@@ -505,6 +535,11 @@ class IntentEngine:
         needs_clarification = False
         if intent != "out_of_scope":
             runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
+            cues = MISREAD_GUARDS.get(intent)
+            earned = True if cues is None else (
+                any(cue in repaired for cue in cues if " " in cue or len(cue) > 4)
+                or any(re.search(rf"\b{cue}\b", repaired) for cue in cues if " " not in cue and len(cue) <= 4)
+            )
             weak_reading = confidence < MIN_TOP_CONFIDENCE
             too_close = confidence - runner_up < MIN_INTENT_MARGIN and confidence < HIGH_CONF
             # "What now" is as confident as "what is my margin floor" is, so
@@ -518,7 +553,7 @@ class IntentEngine:
                 and not resolved_from_context
                 and confidence < MIN_CONFIDENCE_WITHOUT_SUBJECT
             )
-            needs_clarification = bool(weak_reading or too_close or no_subject)
+            needs_clarification = bool(weak_reading or too_close or no_subject or not earned)
 
         return ParseResult(
             text=raw,

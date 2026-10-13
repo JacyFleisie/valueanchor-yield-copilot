@@ -230,6 +230,74 @@ def test_a_jargon_question_is_explained_rather_than_refused(client):
     assert body["headline"]
 
 
+# ---------------------------------------------------------------------------
+# Asking back rather than guessing
+#
+# Confidence alone cannot separate "what now" from "what is my margin floor" -
+# both score highly. What separates them is whether the sentence points at
+# anything, and whether the intent it landed on was actually earned. These are
+# the calibration tests for that rule, in both directions.
+# ---------------------------------------------------------------------------
+def test_vague_phrases_ask_back_instead_of_answering_confidently(context):
+    engine = context["engine"]
+    for phrase in [
+        "handle it",
+        "fix this",
+        "sort it out",
+        "do the thing",
+        "what about that",
+        "do something about it",
+        "make it better",
+        "what now",
+    ]:
+        parsed = engine.parse(phrase)
+        assert parsed.needs_clarification, f"{phrase!r} must not get a confident answer"
+
+
+def test_real_questions_are_answered_without_being_sent_back(context):
+    engine = context["engine"]
+    for phrase in [
+        "good morning",
+        "what can you do",
+        "which sectors do you support",
+        "what does urgency mean",
+        "what is my margin floor",
+        "which batch needs attention first",
+        "what will go to waste",
+        "how is today going",
+        "what have i approved so far",
+        "what will close look like",
+        "should i discount the croissant",
+        "is the croissant going to sell out",
+        "show me the audit trail",
+    ]:
+        parsed = engine.parse(phrase)
+        assert not parsed.needs_clarification, (
+            f"{phrase!r} read as {parsed.intent} at {parsed.confidence:.2f} must not ask back"
+        )
+
+
+def test_a_clarifying_answer_is_presented_as_one(client):
+    body = client.post("/api/copilot", json={"question": "sort it out", "sessionId": "ask"}).json()
+    assert body["nlu"]["needsClarification"] is True
+    assert body["nlu"]["reply"]["clarifyOptions"]
+    # The headline must be about the ambiguity, not the intent label it landed on.
+    assert body["headline"] == "I need one more thing before I answer"
+    assert body["severity"] == "info"
+    assert not body["nextSteps"], "steps would assume a line was named when the point is that it was not"
+
+
+def test_an_assistant_question_needs_to_earn_its_intent(context):
+    # "Handle it" scoring as Sectors must not become "you are running a coffee
+    # shop". A question about the assistant itself needs a word that belongs to it.
+    engine = context["engine"]
+    guarded = engine.parse("handle it")
+    assert guarded.needs_clarification
+    earned = engine.parse("which other sectors do you support")
+    assert earned.intent == "sector_info"
+    assert not earned.needs_clarification
+
+
 def test_copilot_suggests_follow_ups_that_are_themselves_answerable(client):
     body = client.post(
         "/api/copilot", json={"question": "which batch needs attention first?", "sessionId": "follow"}

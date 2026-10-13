@@ -350,7 +350,7 @@ Once both servers are running (below), open `http://localhost:3000`.
 | Icons | **lucide-react** | |
 | Styling | **Hand-written CSS** | One stylesheet, CSS custom properties, no framework |
 | Assistant (optional) | **OpenRouter** free models | `httpx`, JSON mode, model fallback chain |
-| Tests | **pytest 8.4** + FastAPI `TestClient` | 68 tests |
+| Tests | **pytest 8.4** + FastAPI `TestClient` | 72 tests |
 
 There is no vector database, no embedding model and no container in the loop. Retrieval is TF-IDF
 over a corpus built per request, which keeps the whole product installable offline and its behaviour
@@ -498,8 +498,8 @@ cd backend
 .venv\Scripts\python.exe -m pytest tests -q     # or: python -m pytest tests -q
 ```
 
-**68 tests, all passing.** The suite runs against a scratch database and with the network assistant
-switched off, so it is deterministic and fast (~90s, most of it training).
+**72 tests, all passing.** The suite runs against a scratch database and with the network assistant
+switched off, so it is deterministic and fast (~100s, most of it training).
 
 Beyond the original floor, planner and HTTP-contract tests, the suite asserts the properties this
 project is actually about:
@@ -519,6 +519,10 @@ project is actually about:
 - **a thumbs-down is recorded but never taught**
 - a confirmed correction changes how the model reads that phrasing, and the learned-row count grows
 - history restores the whole conversation, not just the prose
+- **eight vague phrases ask back** ("handle it", "fix this", "what now", …) while **thirteen real
+  questions answer without being sent back**, so the two behaviours are pinned down in both directions
+- a clarifying answer is presented as one — its own headline, no misleading action buttons
+- an assistant-about intent has to be *earned* by a word that belongs to it
 
 ## What leaves your machine
 
