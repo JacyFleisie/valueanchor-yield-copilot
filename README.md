@@ -750,13 +750,84 @@ architecture can be shaped to accept it, and so the demo does not promise more t
 
 ### Phase 1 — The integration surface (the first thing to build)
 
-| Step | What it means |
+The honest shape of the public surface a business app or backend can call is written down in two
+documents in [`docs/integration/`](docs/integration/), with the README carrying the honest caveats:
+
+- [`docs/integration/01-api-contract.md`](docs/integration/01-api-contract.md) — the `/v1` contract: per-business scoping, the push path (stock batch, orders batch, order events), the sell-through surface as its own thing with its source stated, the recommends surfaces (analyze / scenarios / pair), the decision surface, auth scopes, rate limits, error shapes, and the honest carve-outs (floor optional, cost optional, time signal split, per-business mapping is the real work).
+- [`docs/integration/02-first-build-plan.md`](docs/integration/02-first-build-plan.md) — the honest order to build it: owned store + mapping first, push surfaces next, spreadsheet/CSV on-ramp after that (the easy landing for businesses that cannot push), read surfaces, then recommends, then the decision log, then auth/hardening, then connectors for the businesses that have them.
+
+The notes below are the honest summary of both, so the roadmap doesn't drift from the contract.
+
+#### What the surface is, honestly
+
+ValueAnchor keeps an **owned mapped store** of each business's stock, orders (optional) and sell-through,
+and reasons off that copy. The business keeps its own source of truth; ValueAnchor reads or is pushed
+into a per-business mapped copy; the decision log is shared. The surface is the same contract for
+every business; the per-business mapping is the thing that makes it work for each one.
+
+A business can reach the surface two honest ways:
+
+- **Push.** The business's system POSTs stock batch, orders batch, or order events to the product. Cleanest
+  consent, no access to the business's internals needed.
+- **Spreadsheet / CSV on-ramp.** A business drops a sheet or CSV and the product reads and maps it. The easy
+  landing for businesses that cannot push a system call — keep it as a first class, not a hack.
+
+Connectors (DB read, POS/booking API, etc.) come later, for the businesses that have them and want the
+product to read.
+
+#### The honest caveats written into the contract
+
+- **Floor is optional everywhere.** Some businesses have an explicit floor; some don't. Absent is allowed and
+  stated.
+- **Cost is optional everywhere.** Profit means price − perk cost when cost is absent, not true economic profit,
+  and the surface says so.
+- **Time signal is split** (expiry / closure / appointment / none / unknown), so the surface is not pretending
+every business is a per-item expiry business.
+- **Sell-through is its own thing, with its source stated** (`orders` / `stock` / `mixed`), honestly.
+- **Sell-through is not orders, and orders are not stock.** A business can have stock without orders, orders
+  without a stock push, or both, and the reasoning still works in each case honestly.
+- **The product holds a mapped copy, not a live query of the business's raw schema every call.**
+
+#### The surfaces
+
+| Surface | What it is |
 | --- | --- |
-| **Public REST API** | Promote today's `/api/*` to a versioned, documented public API (`/v1/...`) with an OpenAPI spec, so an integrator never reads our source to use us |
-| **API keys + scopes** | Per-business keys, scoped (read stock / read recommendations / log decisions), rotated from the dashboard |
-| **Webhooks** | Push events outward: `recommendation.created`, `waste.forecast_changed`, `quota.exhausted`, `decision.logged`, so a business's own system reacts without polling |
-| **Embeddable widget** | A one-line `<script>` or iframe that drops the copilot into any existing web app or admin panel |
-| **Idempotency + rate limits** | Every write accepts an idempotency key; every key has a quota, so an API client cannot be more expensive to serve than the UI |
+| `POST /v1/stock/batch` | Push stock into the mapped store. Returns accepted/rejected. |
+| `GET /v1/stock` | Mapped stock for a business, filterable by updatedAfter. |
+| `GET /v1/stock/compact` | Cheap shape a business app uses to render its own list. |
+| `POST /v1/orders/batch` | Push orders. Returns accepted/rejected. |
+| `POST /v1/orders/{id}/events` | Push an order event so sell-through stays current without re-pushing everything. |
+| `GET /v1/orders/sellthrough` | Cheap derived sell-through for one line or the business, with its source stated. |
+| `POST /v1/recommends/analyze` | The core: bundle plan + three-way money + break-even, with sources and `figuresTraceable`. |
+| `POST /v1/recommends/scenarios` | Full three-way comparison for one line. |
+| `POST /v1/recommends/pair` | Bundle coster for two or three lines, line-by-line plus combined total. |
+| `POST /v1/strategy/decide` | Log what was actually done (idempotency key required). |
+| `GET /v1/strategy/history` | Read the shared decision log, optionally filtered by item. |
+
+#### The honest reading order for the build
+
+1. Owned store + per-business mapping layer (everything else reads or writes from this).
+2. Push stock + orders + events (cleanest consent first).
+3. Spreadsheet/CSV on-ramp (the easy landing for businesses that can't push).
+4. Read surfaces: stock/compact + sell-through.
+5. Recommends: analyze / scenarios / pair.
+6. Decision surface + shared decision log.
+7. Auth scopes, rate limits, error shapes (including the honest 422).
+8. Connector pull — DB read, POS/booking API — later, for businesses that have it.
+
+#### What it is not
+
+- It is not an implementation. It is the shape and the order.
+- It is not a plug-in-to-raw-tables thing. The contract is against the mapped copy.
+- It is not built yet. The runway note is the honest summary of the contract and the plan.
+
+#### Why these two documents are the real first deliverable
+
+The `/v1` contract is the deliverable that turns "my software can integrate with any business app/backend"
+from words in the roadmap into a real surface someone can start from — because it says exactly what the
+business's app or backend can call, how the product sees their data, and the honest carve-outs that keep it
+honest. The build plan is the honest order to make that contract real without losing the carve-outs. The
+README keeps a short summary and a pointer to both so the repo is the source of truth.
 
 ### Phase 2 — Connect the business's own data
 
