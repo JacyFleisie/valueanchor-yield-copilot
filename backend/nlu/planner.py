@@ -55,6 +55,11 @@ class Reply:
     severity: str = "info"
     plain: str = ""
     custom: bool = False
+    # The money comparison behind a bundle or price decision: what each option
+    # keeps per unit, what gets written off instead, and what the recommendation
+    # has to do to be worth choosing. Empty for answers that are not a spending
+    # decision.
+    profit: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +70,7 @@ class Reply:
             "focusItemId": self.focus_item_id,
             "evidence": self.evidence,
             "clarifyOptions": self.clarify_options,
+            "profit": self.profit,
             "how": INTENT_HOW.get(self.intent, ""),
             "headline": self.headline,
             "meaning": self.meaning,
@@ -219,7 +225,7 @@ def _margin_floor(parse, pairs, profile, rows, focus):
 def _bundle_recommend(pairs, profile, rows, perks, focus):
     _metrics, row = _pair_for(focus, pairs)
     if row is None:
-        return _need_item(profile, "bundle")
+        return _need_item(profile, "bundle", candidates=[row for _m, row in pairs])
     plan = yield_engine.bundle_plan(row, perks, profile)
     recommendation = plan["recommendation"]
     tiers = [tier for tier in recommendation["tiers"] if tier["status"] != "withheld"]
@@ -257,7 +263,7 @@ def _discount_request(parse, pairs, profile, rows, focus):
     percent = percent_entity["value"] if percent_entity else 10.0
     row = focus or (pairs[0][1] if pairs else None)
     if row is None:
-        return _need_item(profile, "discount")
+        return _need_item(profile, "discount", candidates=[row for _m, row in pairs])
     impact = yield_engine.discount_impact(row, profile, percent)
     if impact["breachesFloor"]:
         answer = (
@@ -299,7 +305,12 @@ def _compare_items(parse, pairs, profile, rows):
     mentions = [entity for entity in _entities(parse, "item")]
     if len(mentions) < 2:
         listed = ", ".join(row["ItemName"] for _m, row in pairs[:3])
-        return _need_item(profile, "compare", detail=f"I can see {_plural(len(pairs), 'line')}: {listed}.")
+        return _need_item(
+            profile,
+            "compare",
+            detail=f"I can see {_plural(len(pairs), 'line')}: {listed}.",
+            candidates=[row for _m, row in pairs],
+        )
     left_id, right_id = mentions[0]["itemId"], mentions[1]["itemId"]
     lines = []
     for metrics, row in pairs:
@@ -361,7 +372,7 @@ def _what_if(parse, pairs, profile, rows, perks, focus):
     percent = percent_entity["value"] if percent_entity else 10.0
     row = focus or (pairs[0][1] if pairs else None)
     if row is None:
-        return _need_item(profile, "scenario")
+        return _need_item(profile, "scenario", candidates=[row for _m, row in pairs])
     discount = yield_engine.discount_impact(row, profile, percent)
     plan = yield_engine.bundle_plan(row, perks, profile)
     bundle_margin = round(plan["recommendation"]["marginRetained"], 2)
@@ -582,15 +593,39 @@ def _out_of_scope(parse, profile):
 
 
 # ---------------------------------------------------------------------------
-def _need_item(profile, topic: str, detail: str = "") -> Reply:
+def _need_item(profile, topic: str, detail: str = "", candidates: list[dict[str, Any]] | None = None) -> Reply:
+    """Ask which line was meant - and offer the lines, rather than making it a typing exercise.
+
+    This used to be a dead end: the reply named the problem and then left the
+    owner to retype the whole question with an item in it. Every other reply in
+    the product carries something to tap, so this one does too. The candidate
+    lines are turned into options that re-ask the same question with that line
+    named, which is the same mechanism the ambiguity chips use.
+    """
     detail = (detail + " ") if detail else ""
     answer = (
         f"{detail}Tell me which {profile['itemLabel'].lower()} you mean and I will work it out. "
-        f"For a {topic} question I need one of your live lines named, for example "
-        f"\"{profile['sampleQuestion'].lower()}\"."
+        f"For a {topic} question I need one of your live lines named"
     )
-    reasoning = ["The question needs a specific item and none was recognised in the sentence", "This is a spot where the assistant is asking for the missing detail before it can answer"]
-    return Reply(topic, answer, reasoning, None)
+    options = [
+        {
+            "label": f"{candidate['ItemName']} - {topic}",
+            "intent": topic,
+            "itemId": candidate["ItemID"],
+            "question": f"{topic} for {candidate['ItemName']}",
+        }
+        for candidate in (candidates or [])[:4]
+        if candidate.get("ItemName")
+    ]
+    if options:
+        answer += ", or pick one of these:"
+    else:
+        answer += f", for example \"{profile['sampleQuestion'].lower()}\"."
+    reasoning = [
+        "The question needs a specific item and none was recognised in the sentence",
+        "Rather than guess, the answer asks for the line and offers the live ones to pick from",
+    ]
+    return Reply(topic, answer, reasoning, None, clarify_options=options)
 
 
 # ---------------------------------------------------------------------------
@@ -963,9 +998,83 @@ def _enrich(reply: Reply, parse: ParseResult, profile: dict[str, Any], pairs, pe
         reply.next_steps = block["steps"]
         reply.follow_ups = [question for question in dict.fromkeys(block["follow_ups"]) if question]
 
+    # A question about money should come with the money. For the intents where the
+    # answer is a choice - bundle it, cut it, or leave it - attach the three-way
+    # comparison and lift its headline figures into the answer card, so the owner
+    # can see what each option keeps instead of being told the recommendation is
+    # "better" without a number behind it.
+    if row is not None and reply.intent in PROFIT_INTENTS:
+        try:
+            reply.profit = yield_engine.profit_scenarios(row, perks, profile)
+            reply.key_numbers = reply.key_numbers + _profit_numbers(reply.profit, profile)
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            # A comparison is a bonus on top of an answer that is already correct.
+            # Losing it must not cost the owner the answer itself.
+            reply.profit = {}
+
     first_step = reply.next_steps[0]["label"] if reply.next_steps else ""
     reply.plain = " ".join(part for part in [reply.headline, reply.meaning, first_step] if part).strip()
     return reply
+
+
+PROFIT_INTENTS = {"bundle_recommend", "discount_request", "what_if"}
+
+
+def _profit_numbers(profit: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, str]]:
+    """The comparison as three labelled figures for the answer card."""
+    money = lambda value: yield_engine.money(profile, value)  # noqa: E731
+    by_key = {scenario["key"]: scenario for scenario in profit.get("scenarios", [])}
+    numbers: list[dict[str, str]] = []
+
+    if "bundle" in by_key:
+        bundle = by_key["bundle"]
+        numbers.append(
+            {
+                "label": "You keep, if bundled",
+                "value": money(bundle["cashPerUnit"]),
+                "note": f"per unit, after {money(bundle['perkCost'])} of perks",
+            }
+        )
+    if "markdown" in by_key:
+        markdown = by_key["markdown"]
+        numbers.append(
+            {
+                "label": f"You keep, if cut {profit.get('markdownPercent', 20):g}%",
+                "value": money(markdown["cashPerUnit"]),
+                "note": "per unit, and the new price sticks",
+            }
+        )
+    if "lapse" in by_key:
+        write_off = by_key["lapse"].get("writeOff") or 0
+        # Only worth a line when there is something to lose. "You lose R0" reads
+        # as a glitch rather than as "this line will clear on its own".
+        if write_off > 0:
+            numbers.append(
+                {
+                    "label": "You lose, if nothing changes",
+                    "value": money(write_off),
+                    "note": "expected unsold stock at shelf price",
+                }
+            )
+    breakeven = profit.get("breakeven")
+    if breakeven:
+        if breakeven.get("direction") == "already-ahead":
+            numbers.append(
+                {
+                    "label": "Against a price cut",
+                    "value": "ahead",
+                    "note": f"keeps more per unit than a {profit.get('markdownPercent', 20):g}% cut, with no extra volume needed",
+                }
+            )
+        else:
+            numbers.append(
+                {
+                    "label": "Extra units to match a cut",
+                    "value": f"+{breakeven['extraPercent']}%",
+                    "note": "how much more a bundle must sell to keep pace",
+                }
+            )
+    return numbers
 
 
 def _clarify(parse, alternatives) -> Reply:

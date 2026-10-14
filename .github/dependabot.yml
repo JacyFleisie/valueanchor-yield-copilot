@@ -1,0 +1,42 @@
+version: 2
+
+# The health check found a critical advisory in the framework by hand, which is
+# exactly the kind of thing that should arrive as a pull request instead of as a
+# surprise. Both ecosystems are watched because both ship to the user: the
+# Python side decides the numbers, the Node side renders them.
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(backend)"
+    groups:
+      # Grouped so a week of patch bumps arrives as one reviewable PR rather
+      # than as eight notifications. Majors stay separate on purpose: those need
+      # reading, not rubber-stamping.
+      python-patch:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(frontend)"
+    groups:
+      node-patch:
+        patterns: ["*"]
+        update-types: ["patch", "minor"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "deps(ci)"

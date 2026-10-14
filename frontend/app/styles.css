@@ -167,3 +167,108 @@
 .trend-bar span{font:8px 'DM Mono';color:#a3acb6;white-space:nowrap}
 @media(max-width:1080px){.starters{grid-template-columns:1fr}.guardrail-grid{grid-template-columns:1fr}}
 @media(max-width:720px){.chat{padding:17px 15px}.chat-expanded{padding:18px 15px}.chat-state{display:none}.bubble.user{max-width:90%}.chat-stream{max-height:none}.answer-card{padding:15px 14px}.figures{grid-template-columns:1fr 1fr}.answer-actions{gap:4px}.vote{margin-left:0;width:100%}.step{flex-direction:column;align-items:flex-start;gap:9px}.assistant-head{flex-wrap:wrap}.trend-bar span{display:none}}
+/* ---------------------------------------------------------------------------
+   The models tab.
+
+   The design problem here is that this screen is about a limit the owner cannot
+   change, so it has to be legible at a glance from across a counter: one banner
+   that says whether the assistant is available, then one card per model saying
+   why, in that order of prominence. Colour is used only for state - ready,
+   blocked, missing - never decoratively, because on this screen colour is the
+   fastest way to read "can it answer me".
+   --------------------------------------------------------------------------- */
+.quota-banner{display:flex;gap:11px;align-items:flex-start;margin:18px 0 0;padding:15px 17px;border-radius:10px;background:#fff4e8;border:1px solid #f3d9bd;color:#8a5a1f}
+.quota-banner svg{flex:none;margin-top:1px;color:#d9873d}
+.quota-banner b{display:block;font-size:12.5px;letter-spacing:-.2px}
+.quota-banner span{display:block;font-size:11px;line-height:1.6;margin-top:5px;color:#96693a;max-width:760px}
+.quota-banner.soft{background:#f1f8f5;border-color:#cfe9dd;color:#2c6b53}
+.quota-banner.soft svg{color:#35ad83}
+.quota-banner.soft span{color:#4d7f6b}
+
+.models-list{display:grid;gap:10px;margin:22px 0 20px}
+.model-card{border:1px solid var(--line);border-radius:11px;padding:15px 17px;background:#fff;transition:border-color .15s ease}
+.model-card.blocked{background:#fcfdfe;border-style:dashed}
+.model-card-head{display:flex;align-items:center;gap:11px}
+.model-order{width:22px;height:22px;border-radius:50%;background:#eef3fb;color:#4a7bc4;font:600 10px 'DM Mono';display:grid;place-items:center;flex:none}
+.model-card-title{flex:1;min-width:0}
+.model-card-title b{display:block;font-size:12.5px;letter-spacing:-.2px}
+.model-card-title code{display:block;font:9.5px 'DM Mono';color:#95a1ad;margin-top:3px;overflow-wrap:anywhere}
+.model-state{display:inline-flex;align-items:center;gap:4px;font:8.5px 'DM Mono';letter-spacing:.7px;text-transform:uppercase;border-radius:20px;padding:4px 9px;white-space:nowrap}
+.model-state.on{background:#e7f7f0;color:#32a77d}
+.model-state.off{background:#fdeceb;color:#c9564f}
+
+.model-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0 0}
+.model-meta small{display:block;font:8px 'DM Mono';letter-spacing:.7px;color:#a3acb6}
+.model-meta span{display:block;font-size:10.5px;margin-top:5px;color:#4d5c6d;overflow-wrap:anywhere}
+.model-meta span.mono{font:9.5px 'DM Mono';color:#71808f}
+.model-meta span.missing{color:#c9564f}
+
+.model-blocked{margin:12px 0 0;font-size:10.5px;line-height:1.6;color:#a1662c;background:#fff8ef;border-radius:7px;padding:8px 11px}
+.model-back{display:flex;align-items:center;gap:6px;margin:12px 0 0;font-size:10.5px;line-height:1.6;color:#8a5a1f}
+.model-back b{font-weight:700}
+.probe-line{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0 0;font-size:10.5px;line-height:1.6}
+.probe-line.ok{color:#2c8a68}
+.probe-line.bad{color:#b0564f}
+
+.model-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:13px;padding-top:12px;border-top:1px solid #eef1f4}
+.model-actions .ghost{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:#fff;color:#6b7a8a;border-radius:6px;padding:6px 10px;font:600 10px Manrope;cursor:pointer}
+.model-actions .ghost:hover:not(:disabled){border-color:#c6d6ee;color:var(--blue);background:#f7faff}
+.model-actions .ghost:disabled{opacity:.5;cursor:default}
+.model-actions .ghost.on{border-color:#35ad83;color:#2c8a68;background:#f1fbf6}
+.model-actions .ghost.danger:hover:not(:disabled){border-color:#f0c3bf;color:#c9564f;background:#fef4f3}
+
+.model-add{margin-top:20px;border:1px solid var(--line);border-radius:11px;padding:20px 22px;background:var(--paper)}
+.model-add .eyebrow{margin:0 0 8px}
+.model-add-note{font-size:11px;line-height:1.7;color:#6f7d8c;margin:0 0 16px;max-width:720px}
+.model-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.model-form label small{display:block;font:8px 'DM Mono';letter-spacing:.7px;color:#a3acb6;margin-bottom:6px}
+.model-form input,.model-form select{width:100%;border:1px solid var(--line);border-radius:7px;padding:9px 11px;font:11px Manrope;color:var(--ink);background:#fff;outline:none}
+.model-form input:focus,.model-form select:focus{border-color:#8bb4f4;box-shadow:0 0 0 3px #e9f1ff}
+.model-add-actions{display:flex;align-items:center;gap:10px;margin-top:16px}
+.model-add-actions .primary-action{margin-top:0}
+.model-add-actions .ghost{border:1px solid var(--line);background:#fff;color:#6b7a8a;border-radius:6px;padding:10px 14px;font:600 11px Manrope;cursor:pointer}
+
+@media(max-width:980px){.model-meta{grid-template-columns:1fr 1fr}}
+@media(max-width:720px){.model-meta{grid-template-columns:1fr}.model-actions .ghost{padding:6px 8px}}
+
+/* Bundle costing: pair two or three lines and see what each one keeps. */
+.pair-picker button{display:inline-flex;align-items:center;gap:7px}
+.pair-picker button em{font-style:normal;color:#98a2ad;font:9px 'DM Mono'}
+.pair-picker button.on{border-color:var(--blue);background:#edf4ff;color:var(--blue)}
+.pair-picker button.on em{color:var(--blue)}
+.pair-lines{display:grid;gap:10px;margin-top:20px}
+.pair-line{border:1px solid var(--line);border-left-width:3px;border-radius:10px;padding:14px 16px;background:#fff}
+.pair-line.good{border-left-color:var(--green)}
+.pair-line.warn{border-left-color:var(--orange)}
+.pair-line.bad{border-left-color:#d45e59}
+.pair-line-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px}
+.pair-line-head b{font-size:12.5px}
+.pair-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.pair-metrics small{display:block;font:8px 'DM Mono';color:#a3acb6;letter-spacing:.6px;margin-bottom:4px}
+.pair-metrics b{font-size:13px}
+.pair-metrics b.ok{color:#32a77d}
+.pair-metrics b.bad{color:#d45e59}
+.pair-perks{display:block;margin-top:11px;color:#6f7d8c;font-size:10px}
+.pair-total{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:16px 18px;background:var(--paper)}
+.pair-total small{display:block;font:8px 'DM Mono';color:#98a2ad;letter-spacing:.7px;margin-bottom:6px}
+.pair-total b{font-size:18px;letter-spacing:-.5px}
+.pair-total b.ok{color:#32a77d}
+.pair-verdict{margin:14px 0 0;font-size:11.5px;line-height:1.7;color:#3d4c5c;font-weight:600}
+
+/* The three-way money comparison carried inside the yield action. */
+.profit-block{margin-top:22px;border-top:1px solid var(--line);padding-top:18px}
+.scenario-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:6px}
+.scenario{border:1px solid var(--line);border-radius:9px;padding:13px;display:flex;flex-direction:column;gap:6px;background:#fff}
+.scenario.picked{border-color:#8bb4f4;background:#f7faff;box-shadow:0 0 0 3px #eef4ff}
+.scenario-head{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.scenario-head b{font-size:10.5px}
+.scenario-badge{font:8px 'DM Mono';letter-spacing:.4px;background:#e9f1ff;color:var(--blue);border-radius:10px;padding:3px 6px;white-space:nowrap}
+.scenario strong{font-size:17px;letter-spacing:-.5px}
+.scenario strong small{font:9px 'DM Mono';color:#98a2ad;margin-left:3px}
+.scenario-sub{font:9px 'DM Mono';color:#a3acb6}
+.scenario p{margin:2px 0 0;font-size:10px;line-height:1.6;color:#596879}
+.scenario-flag{align-self:flex-start;font:9px 'DM Mono';border-radius:10px;padding:3px 7px;margin-top:auto}
+.scenario-flag.ok{background:#e7f7f0;color:#32a77d}
+.scenario-flag.bad{background:#ffe9e7;color:#d45e59}
+.breakeven{margin:14px 0 0;font-size:11px;line-height:1.7;color:#3d4c5c;background:var(--paper);border-radius:8px;padding:11px 13px}
+@media(max-width:900px){.scenario-grid{grid-template-columns:1fr}.pair-metrics{grid-template-columns:1fr 1fr}.pair-total{grid-template-columns:1fr 1fr}}

@@ -1,17 +1,28 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, BarChart3, Bell, ChevronRight, CircleHelp, Clock3, Filter, GraduationCap, Layers3, Menu, PackageCheck, Search, Settings2, ShieldCheck, Sparkles, X, Zap } from 'lucide-react'
+import { ArrowUpRight, BarChart3, Bell, ChevronRight, CircleHelp, Clock3, Cpu, Filter, GraduationCap, Layers3, Menu, PackageCheck, Search, Settings2, ShieldCheck, Sparkles, X, Zap } from 'lucide-react'
 import CopilotChat from './CopilotChat'
+import ModelsTab from './ModelsTab'
 
 type Inventory = { itemId:number; itemName:string; category:string; sector:string; basePrice:number; hoursRemaining:number; velocityIndex:number; urgencyScore:number; riskStatus:string; unitsAvailable:number; unitsSold:number; totalCapacity:number }
 type Profile = { sector:string; name:string; businessName:string; blurb:string; inventoryNoun:string; itemLabel:string; heroLine:string; sampleQuestion:string; marginFloorPct:number; currencyCode:string; currencySymbol:string }
 type Sector = { slug:string; name:string; businessName:string; blurb:string; inventoryNoun:string }
 type Perk = { PerkName:string; RetailValue:number; CostToBusiness:number }
 type Tier = { tier:number; label:string; status:'funded'|'deferred'|'withheld'; perk:Perk|null }
-type Analysis = { profile:Profile; item:Inventory; metrics:{ marginPreserved:number; marginThreshold:number; deferredCommitment:number; floorRespected:boolean; urgencyScore:number; velocityIndex:number }; recommendation:{ headline:string; action:string; marginRetained:number; tiers:Tier[] } }
+type ProfitScenario = { key:string; label:string; cashPerUnit:number; floorRespected:boolean; perkCost:number; unitsMoved:number; cash:number; writeOff:number|null; verdict:string; detail:string }
+type ProfitBreakdown = {
+  unitsLeft:number; markdownPercent:number;
+  floor:{ percent:number; perUnit:number; roomToAddValue:number };
+  scenarios:ProfitScenario[]; recommended:string;
+  breakeven:{ ratio:number; extraPercent:number; direction:string; ifBundled:number; ifMarkedDown:number; explanation:string }|null;
+  deferred:{ amount:number; note:string }; notModelled:string
+}
+type PairLine = { itemId:number; itemName:string; category:string; shelfPrice:number; floorPerUnit:number; marginPerUnit:number; headroomPerUnit:number; perkCost:number; unitsOnShelf:number; valueOnShelf:number; profitIfAllSells:number; hoursRemaining:number; verdict:string; perks:string[] }
+type PairResult = { lines:PairLine[]; combined:{ valueOnShelf:number; profitIfAllSells:number; perkCostToday:number; deferredToNextVisit:number; lines:number }; verdict:string; method:string }
+type Analysis = { profile:Profile; item:Inventory; metrics:{ marginPreserved:number; marginThreshold:number; deferredCommitment:number; floorRespected:boolean; urgencyScore:number; velocityIndex:number }; recommendation:{ headline:string; action:string; marginRetained:number; tiers:Tier[] }; profit:ProfitBreakdown }
 type Decision = { strategyId:number; itemId:number; itemLabel:string; category:string; sector:string; managerDecision:string; unitsFilled:number; marginRetained:number; createdTimestamp:string }
-type Tab = 'Overview' | 'Inventory' | 'Strategies' | 'Guardrails' | 'Copilot AI'
+type Tab = 'Overview' | 'Inventory' | 'Strategies' | 'Guardrails' | 'Copilot AI' | 'Models'
 
 type Learning = {
   turns:number; helpful:number; unhelpful:number; confirmedReadings:number; learnedExamples:number;
@@ -38,8 +49,8 @@ type NluModel = {
   assistant:{ enabled:boolean; models:string[]; role:string; guardrails:string[] }
 }
 
-const TABS: Tab[] = ['Overview', 'Inventory', 'Strategies', 'Guardrails', 'Copilot AI']
-const TAB_ICON: Record<Tab, string> = { Overview:'bars', Inventory:'package', Strategies:'layers', Guardrails:'shield', 'Copilot AI':'sparkles' }
+const TABS: Tab[] = ['Overview', 'Inventory', 'Strategies', 'Guardrails', 'Copilot AI', 'Models']
+const TAB_ICON: Record<Tab, string> = { Overview:'bars', Inventory:'package', Strategies:'layers', Guardrails:'shield', 'Copilot AI':'sparkles', Models:'cpu' }
 
 // Clarifying chips do not guess at a rephrasing: they send the original question
 // back with the chosen intent, which the engine then takes as confirmed.
@@ -65,6 +76,14 @@ export default function Home() {
   // tab - is handed to the one chat rather than opening a second conversation.
   const [queued, setQueued] = useState<{ text:string; nonce:number } | null>(null)
   const queue = (text:string) => setQueued({ text, nonce: Date.now() })
+  // The pairing tool: pick up to three live lines and cost the bundle line by
+  // line, so a pairing that loses money on the second item cannot hide behind a
+  // healthy total. Selection is capped at three because that is what the cost
+  // model is honest about, and picking a fourth simply drops the oldest.
+  const [pair, setPair] = useState<number[]>([])
+  const [pairResult, setPairResult] = useState<PairResult | null>(null)
+  const [pairing, setPairing] = useState(false)
+  const togglePair = (id:number) => setPair(current => current.includes(id) ? current.filter(value => value !== id) : [...current.slice(Math.max(0, current.length - 2)), id])
   // The whole product is about what lapses before close, so a stale date in the
   // header would undercut it. Set after mount so the server and client render the
   // same markup and hydration stays quiet.
@@ -155,6 +174,21 @@ export default function Home() {
     }
   }
 
+  const costPair = async () => {
+    if (pair.length === 0) return
+    setPairing(true)
+    try {
+      const response = await fetch(`${API}/api/profit/pair`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ itemIds: pair }) })
+      if (!response.ok) throw new Error('pair failed')
+      setPairResult(await response.json())
+      setNotice('')
+    } catch {
+      setNotice('Could not cost that pairing. Is the backend on port 8000?')
+    } finally {
+      setPairing(false)
+    }
+  }
+
   const noun = profile?.inventoryNoun ?? 'inventory'
 
   return <main>
@@ -204,6 +238,47 @@ export default function Home() {
       </>}
 
       {activeTab === 'Strategies' && <div className="tab-panel">
+        <p className="eyebrow accent">BUNDLE COSTING</p>
+        <h2>Bundle two or three lines and see what each one keeps</h2>
+        <p>Pick up to three live {noun} below. Each line is costed on its own — shelf price less the perks that fit above its own floor — so a pairing that quietly loses money on the second item cannot hide behind a healthy total. Nothing here assumes an uplift in sales; the number is what each line keeps if it sells, and where it only breaks even you are told that in words.</p>
+        <div className="phrase-chips pair-picker">
+          {items.map(item => <button key={item.itemId} className={pair.includes(item.itemId) ? 'on' : ''} aria-pressed={pair.includes(item.itemId)} onClick={() => togglePair(item.itemId)}>{item.itemName}<em>{money(item.basePrice)}</em></button>)}
+        </div>
+        <div className="model-add-actions">
+          <button className="primary-action" disabled={pairing || pair.length === 0} onClick={costPair}>{pairing ? 'Costing…' : `Cost this pairing (${pair.length})`}</button>
+          {pair.length > 0 && <button className="ghost" onClick={() => { setPair([]); setPairResult(null) }}>Clear</button>}
+        </div>
+
+        {pairResult && <>
+          <div className="pair-lines">
+            {pairResult.lines.map(line => <div className={`pair-line ${line.verdict === 'makes money' ? 'good' : line.verdict === 'thin' ? 'warn' : 'bad'}`} key={line.itemId}>
+              <div className="pair-line-head">
+                <b>{line.itemName}</b>
+                <span className={`status ${line.verdict === 'makes money' ? 'healthy' : line.verdict === 'thin' ? 'watch' : 'critical'}`}>{line.verdict}</span>
+              </div>
+              <div className="pair-metrics">
+                <div><small>SHELF PRICE</small><b>{money(line.shelfPrice)}</b></div>
+                <div><small>FLOOR / UNIT</small><b>{money(line.floorPerUnit)}</b></div>
+                <div><small>PROFIT / UNIT</small><b>{money(line.marginPerUnit)}</b></div>
+                <div><small>HEADROOM</small><b className={line.headroomPerUnit < 0 ? 'bad' : 'ok'}>{line.headroomPerUnit < 0 ? `−${money(Math.abs(line.headroomPerUnit))}` : money(line.headroomPerUnit)}</b></div>
+                <div><small>PROFIT IF ALL SELLS</small><b>{money(line.profitIfAllSells)}</b></div>
+                <div><small>ON SHELF</small><b>{line.unitsOnShelf} · {line.hoursRemaining < 24 ? `${Math.max(1, Math.round(line.hoursRemaining))}h` : `${Math.round(line.hoursRemaining / 24)}d`}</b></div>
+              </div>
+              {line.perks.length > 0 && <small className="pair-perks">Value added: {line.perks.join(' + ')}</small>}
+            </div>)}
+          </div>
+          <div className="pair-total">
+            <div><small>VALUE ON SHELF</small><b>{money(pairResult.combined.valueOnShelf)}</b></div>
+            <div><small>PROFIT IF EVERY LINE SELLS</small><b className="ok">{money(pairResult.combined.profitIfAllSells)}</b></div>
+            <div><small>PERK COST TODAY</small><b>{money(pairResult.combined.perkCostToday)}</b></div>
+            <div><small>DEFERRED TO NEXT VISIT</small><b>{money(pairResult.combined.deferredToNextVisit)}</b></div>
+          </div>
+          <p className="pair-verdict">{pairResult.verdict}</p>
+          <p className="modal-note">{pairResult.method}</p>
+        </>}
+      </div>}
+
+      {activeTab === 'Strategies' && <div className="tab-panel">
         <p className="eyebrow accent">STRATEGY HISTORY</p>
         <h2>Decisions that protect margin</h2>
         {history.length === 0
@@ -229,6 +304,8 @@ export default function Home() {
         <div className="guardrail-row"><span>Active business preset</span><strong>{profile?.name ?? 'Coffee shop'}</strong></div>
         <div className="guardrail-row"><span>Reporting currency</span><strong>{profile?.currencyCode ?? 'ZAR'} ({profile?.currencySymbol ?? 'R'})</strong></div>
       </div>}
+
+      {activeTab === 'Models' && <ModelsTab />}
 
       {activeTab === 'Copilot AI' && <>
         <div className="tab-panel">
@@ -392,6 +469,20 @@ export default function Home() {
                 ? <em className="tier-status">Held back: breaks the floor</em>
                 : <strong>{tier.status === 'deferred' ? `${money(tier.perk?.CostToBusiness ?? 0)} next visit` : `+${money(tier.perk?.RetailValue ?? 0)} value`}</strong>}
             </div>)}</div>
+            {analysis.profit && <div className="profit-block">
+              <p className="eyebrow accent">WHAT EACH CHOICE KEEPS</p>
+              <div className="scenario-grid">
+                {analysis.profit.scenarios.map(option => <div className={`scenario ${option.key}${option.key === analysis.profit.recommended ? ' picked' : ''}`} key={option.key}>
+                  <div className="scenario-head"><b>{option.label}</b>{option.key === analysis.profit.recommended && <span className="scenario-badge">recommended</span>}</div>
+                  <strong>{money(option.cashPerUnit)}<small>/ unit</small></strong>
+                  <span className="scenario-sub">{option.unitsMoved > 0 ? `about ${option.unitsMoved} units expected to move` : 'per unit, all else equal'}</span>
+                  <p>{option.detail}</p>
+                  <span className={`scenario-flag ${option.floorRespected ? 'ok' : 'bad'}`}>{option.floorRespected ? 'floor held' : 'breaks the floor'}</span>
+                </div>)}
+              </div>
+              {analysis.profit.breakeven && <p className="breakeven"><b>Where the bundle wins:</b> {analysis.profit.breakeven.explanation}</p>}
+              <p className="meta-note">{analysis.profit.notModelled}</p>
+            </div>}
             <div className="modal-actions"><button className="decline" onClick={() => decide('Declined')}>Decline</button><button className="approve" onClick={() => decide('Approved')}><Sparkles size={16}/>Approve and activate</button></div>
           </>}
     </div></div>}
@@ -404,6 +495,7 @@ function tabIcon(tab:Tab) {
   if (kind === 'package') return <PackageCheck size={18}/>
   if (kind === 'layers') return <Layers3 size={18}/>
   if (kind === 'shield') return <ShieldCheck size={18}/>
+  if (kind === 'cpu') return <Cpu size={18}/>
   return <Sparkles size={18}/>
 }// One line of explanation per kind of retrieved record, so the retrieval panel
 // says what the copilot can look up rather than naming an internal category.

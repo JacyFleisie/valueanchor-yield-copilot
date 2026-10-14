@@ -23,3 +23,11 @@ next-env.d.ts
 # Logs and local scratch
 logs/
 *.log
+
+# The trained NLU model cache. Rebuilt automatically when the corpus or the
+# owner's confirmed questions change, so it is not worth versioning.
+backend/.model_cache/
+
+# Coverage artifacts produced by `pytest --cov`.
+backend/.coverage
+backend/coverage.xml

@@ -11,4 +11,10 @@ rapidfuzz==3.14.6
 symspellpy==6.10.0
 
 # Verification. Not needed to run the app; only for `pytest tests`.
+#
+# Coverage is a first-class check here rather than an afterthought: the claim
+# this project makes is that the numbers are right, and the planner is the code
+# that decides them, so its coverage is the number worth watching.
 pytest==8.4.2
+pytest-cov==6.2.1
+coverage==7.10.6

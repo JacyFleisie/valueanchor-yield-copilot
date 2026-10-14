@@ -1,13 +1,38 @@
+<div align="center">
+
 # ValueAnchor
 
-**An agentic yield copilot for small businesses that sell stock before it lapses.**
+**An agentic yield copilot for businesses that sell stock before it lapses.**
 
-ValueAnchor watches the stock a small business is about to lose — the coffee going cold, the
-pastries going stale, the unsold rooms, the empty appointment slots — and tells the owner what
-to do about it *without cutting the price*.
+Answers about live stock, in plain words, with every figure traceable to a record — and it never
+cuts the price.
 
-It answers questions about live stock in plain language, shows every figure it used, explains
+![tests](https://img.shields.io/badge/tests-119%20passing-brightgreen)
+![coverage](https://img.shields.io/badge/logic%20coverage-81%25-green)
+![nlu](https://img.shields.io/badge/local%20NLU%20holdout-90.1%25-blue)
+![network](https://img.shields.io/badge/network%20calls%20for%20off--topic%20questions-0-lightgrey)
+![python](https://img.shields.io/badge/python-3.14-3776ab)
+![next](https://img.shields.io/badge/Next.js-14-000000)
+
+</div>
+
+ValueAnchor watches the stock a business is about to lose — the coffee going cold, the pastries
+going stale, the unsold rooms, the empty appointment slots — and tells the owner what to do about
+it. It answers questions about live stock in plain language, shows every figure it used, explains
 where each figure came from, and refuses to answer anything that is not about that business.
+
+> **The one rule, enforced in code:** the price floor survives, or the recommendation is not made.
+
+### At a glance
+
+| | |
+| --- | --- |
+| **Local NLU accuracy** | 90.1% ± 1.4%, measured on phrasings the classifier never trained on |
+| **Training corpus** | 1,862 generated utterances across 15 intents (~70 templates each, sector-expanded), plus every question you confirm |
+| **Tests** | 119, all passing — logic-layer coverage 81.4%, planner 89%, yield engine 92% |
+| **Model startup** | 14.4s cold, **2.4s warm** (trained model cached to disk, keyed by a fingerprint) |
+| **Assistant models** | 4 free models, one key, editable from the UI — no file edit, no restart |
+| **What leaves the machine** | at most one request, and only for an on-topic question |
 
 ---
 
@@ -24,18 +49,20 @@ where each figure came from, and refuses to answer anything that is not about th
 - [The four guardrails](#the-four-guardrails)
 - [Why it is agentic, not just a chatbot](#why-it-is-agentic-not-just-a-chatbot)
 - [How it learns: the self-improving loop](#how-it-learns-the-self-improving-loop)
+- [Bundle costing: what each choice keeps](#bundle-costing-what-each-choice-keeps)
 - [The copilot chat](#the-copilot-chat)
 - [How to use it](#how-to-use-it)
 - [Language stack](#language-stack)
 - [Sectors](#sectors)
 - [Run it locally](#run-it-locally)
 - [Configuration](#configuration)
-- [Which language models it uses, and why](#which-language-models-it-uses-and-why)
+- [The models you can plug in](#the-models-you-can-plug-in)
 - [API](#api)
 - [Tests](#tests)
 - [What leaves your machine](#what-leaves-your-machine)
 - [Design decisions and trade-offs](#design-decisions-and-trade-offs)
 - [What it does not do](#what-it-does-not-do)
+- [**Roadmap: from demo to a business's real stack**](#roadmap-from-demo-to-a-businesss-real-stack)
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
 
@@ -69,6 +96,12 @@ exists to make the answers checkable rather than to make them clever.
 - **Refuses price cuts that breach the floor.** With the arithmetic shown.
 - **Forecasts the close.** What is still unsold if nothing changes, from the rate of sale so far.
 - **Reads its own decision history** and learns from it.
+- **Costs a bundle line by line.** Pick two or three lines and see what each keeps on its own, so a
+  pairing that loses money on the second item cannot hide behind a healthy total.
+- **Tells you when a model is usable again.** Every rate limit is captured from the provider's own
+  headers and shown as a live countdown, and the account-wide quota is stated plainly.
+- **Lets you plug in any model** from the app — add, reorder, test, switch off — with no file edit and
+  no restart, and keys that never touch the browser.
 - **Explains itself** in the owner's words, with every figure labelled, plus what to do next.
 - **Refuses everything else.** News, sport, weather, coding, medical, legal: refused locally,
   deterministically, before any model or network call.
@@ -135,9 +168,13 @@ text leaves the machine.
 
 | Stage | Built on | What it does |
 | --- | --- | --- |
-| Intent classification | [scikit-learn](https://github.com/scikit-learn/scikit-learn) | Word (1–2) and character (2–4) n-gram TF-IDF into a logistic regression. 15 intents, ~1000 training rows, holdout-scored. |
+| Intent classification | [scikit-learn](https://github.com/scikit-learn/scikit-learn) | Word (1–2) and character (2–4) n-gram TF-IDF into a logistic regression. 15 intents, **1,862 generated training rows** (≈1,890 with confirmed questions — the app reports its own count), ~7,400 features, holdout-scored. |
 | Catalogue matching | [RapidFuzz](https://github.com/RapidFuzz/RapidFuzz) | Fuzzy item and category resolution, with a margin over the runner-up so "last night" never becomes a product. |
 | Spelling repair | [SymSpellPy](https://github.com/wolfgarbe/symspellpy) | Repairs typos in *unknown* tokens only. Real English is never rewritten, so "joke" stays a joke. |
+
+The corpus has **two layers**: a tidy hand-written set, and a much larger set of the messy sentences
+owners actually type ("what is biting us right now", "should i knock the price down", "how much are we
+binning tonight"). Both are trained on, so the classifier is not only fluent in scripted English.
 
 Regularisation `C` is chosen by cross-validation inside one split's training templates; the hold-out
 split happens on templates *before* slot expansion, so it is measured on phrasings the classifier has
@@ -145,6 +182,13 @@ never seen, and it is repeated across five independent splits. A single shuffle 
 reports anywhere from 81% to 95%, so the model card reports the **mean, the standard deviation and
 the worst split** rather than whichever number came out luckiest. The shipped model is then trained
 on every phrasing, because that estimate already says how it generalises.
+
+Training the expanded corpus takes ~14 seconds, which is too long to repeat on every restart, so the
+trained model is **cached to disk** against a fingerprint of everything it was trained from: the
+corpus version, this business's vocabulary, the questions the owner has confirmed, and the
+hyper-parameters. A restart with nothing changed is instant (~2.4s, mostly the spell dictionary).
+Confirm a reading in the copilot and the fingerprint changes, so learning takes effect on the next
+message rather than after a restart.
 
 ### 2. The retrieval layer (the RAG half)
 
@@ -276,6 +320,34 @@ sentences the owner actually types. This closes the gap:
 Two rules keep this honest: **nothing off-topic is ever learned from**, and **a thumbs-down is never
 taught as a positive example**, so a bad answer cannot be reinforced by the same mechanism that lets
 a good one be learned.
+
+## Bundle costing: what each choice keeps
+
+The question an owner actually asks is *"if I do this, what do I keep?"* ValueAnchor answers it three
+ways on the same line, on the same shelf price, so the comparison is honest:
+
+| Option | Keeps per unit | Floor | Long-run cost |
+| --- | --- | --- | --- |
+| **Do nothing** | full shelf price, on what sells | held | the units that never sell are a write-off |
+| **Mark it down** | shelf price minus the cut | maybe breached | the next customer expects that price too |
+| **Add value instead** | shelf price minus the perk cost | held | none — the price on the board does not move |
+
+The comparison is **per unit on purpose**. No uplift in units is invented, because an invented uplift
+would make the recommended option win by construction — which is exactly the kind of number that gets
+a tool like this distrusted the first time someone checks it.
+
+What *is* computed is the number that settles the argument: **how many extra units the bundle has to
+move to match the markdown's cash**, given that the bundle pays for a perk and the markdown does not.
+When the perks are cheap enough that the bundle already earns more per unit, the same line says so
+instead of printing a negative percentage.
+
+Two places show this in the app:
+
+- The **yield action** on any line carries the three-way table and the break-even line.
+- The **Strategies tab** has an interactive **bundle costing** tool: pick two or three live lines and
+each is costed on its own — shelf price, floor, profit per unit, headroom, and profit if the whole
+line sells — so a pairing that quietly loses money on the second item cannot hide behind a healthy
+total. A line that only reaches its floor is labelled as a *survivor, not an earner*.
 
 ## The copilot chat
 
@@ -429,7 +501,58 @@ OPENROUTER_FALLBACK_MODELS=liquid/lfm-2.5-2.6b:free,nvidia/nemotron-3-ultra-550b
 The key is read from the server environment only, never from a request body, so the browser never
 holds it. `.env` is gitignored; `backend/.env.example` is committed.
 
-## Which language models it uses, and why
+Those two variables now **seed** the model registry on first run rather than configuring it: after
+that, models are added, reordered and switched off from the **Models tab**, and a restart is not
+needed. An existing `OPENROUTER_MODEL` is not lost — it becomes the first row in the chain.
+
+`VALUEANCHOR_MODEL_CACHE` optionally points the trained-model cache somewhere else; the default is
+`backend/.model_cache/`. Delete it to force a retrain.
+
+## The models you can plug in
+
+### Change the model from the app, not from a file
+
+The assistant used to be configured by two environment variables, which meant that trying a different
+free model needed a file edit *and* a restart, and that a model which had run out of quota failed
+invisibly. Both are the same problem: **the selection of models is state**, and state belongs in the
+database, where it can be inspected and changed while the product is running.
+
+So there is a **Models tab**. In it you can:
+
+- **add any model id you want** — nothing is checked against a list. Paste a free model from any
+  provider, or point at a model running on your own machine.
+- pick a **provider** (OpenRouter, or any OpenAI-compatible endpoint such as Ollama, llama.cpp or
+  vLLM) and override the **endpoint** and the **key variable** if you need to.
+- **reorder** the chain, since models are tried top to bottom.
+- **switch a model off** without deleting it, **remove** it, or **test it** with one click.
+- see a **countdown** for any model that is out of quota: *"usable again in 2h 14m"*.
+
+Keys are never typed into the browser. A model entry names the **environment variable the server
+already holds**, so the key stays on the server. Adding a model is a database row, not a code change.
+
+### The free tier is one budget, not one per model
+
+This is the single most important thing a user can be told, and the app says it plainly:
+
+> Free models share **one daily budget for the whole account**, not one each. Switching models does
+> not add requests — it only changes which model refuses you.
+
+The rate-limit half is grounded in what OpenRouter actually returns, verified against a **live 429**
+rather than guessed from documentation:
+
+```
+X-RateLimit-Limit: 50
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1791936000000      # epoch milliseconds, midnight UTC
+```
+
+Those headers are captured on every call and turned into *"available again in 3h 12m"*, on the model
+row and in a banner at the top of the tab, so nobody cycles through four models wondering why none of
+them work. A model already out of quota is **skipped rather than called**, which is both faster and
+more honest than making the user wait for a refusal. And when the shared budget is spent, the UI says
+so instead of pretending models 2–4 are usable.
+
+### The chain shipped by default
 
 **Free models only.** One key covers all of them — OpenRouter routes a model id to a provider, so a
 single key is enough for the whole chain. No per-model keys are needed.
@@ -485,6 +608,14 @@ Notes that shaped the implementation:
 | `POST` | `/api/yield/analyze` | `{"itemId": 101}` — the bundle plan, including withheld tiers |
 | `POST` | `/api/strategy/decide` | Log a decision |
 | `GET` | `/api/strategy/history` | Logged decisions, newest first |
+| `GET` | `/api/models` | The model registry: every model, its key variable, its health and its countdown |
+| `POST` | `/api/models` | `{modelId, provider?, label?, baseUrl?, keyEnv?}` — add any model. Nothing is validated against a list |
+| `POST` | `/api/models/update` | `{rowId, enabled?, label?, modelId?, baseUrl?, keyEnv?}` — edit a row in place |
+| `DELETE` | `/api/models/{rowId}` | Remove a model (its health is kept, so re-adding does not erase recent history) |
+| `POST` | `/api/models/order` | `{order: [rowId, ...]}` — set the order the chain is tried in |
+| `POST` | `/api/models/probe` | Ask one model directly, so a new entry can be tested before relying on it |
+| `POST` | `/api/profit/scenarios` | `{itemId, markdownPercent?}` — cost one line three ways, with the break-even |
+| `POST` | `/api/profit/pair` | `{itemIds: [...]}` — cost a bundle line by line, plus the combined total |
 
 `POST /api/copilot` returns, in one payload: `answer`, `engineAnswer`, `source`, `headline`,
 `meaning`, `severity`, `nextSteps`, `keyNumbers`, `followUps`, `glossary`, `sources`, `retrieval`,
@@ -498,8 +629,11 @@ cd backend
 .venv\Scripts\python.exe -m pytest tests -q     # or: python -m pytest tests -q
 ```
 
-**73 tests, all passing.** The suite runs against a scratch database and with the network assistant
-switched off, so it is deterministic and fast (~100s, most of it training).
+**119 tests, all passing.** The suite runs against a scratch database and with the network assistant
+switched off, so it is deterministic and fast. Logic-layer coverage is **81.4%**, and the two layers
+that decide what you are told about money are higher still — **planner 89%**, **yield engine 92%**.
+Coverage is a first-class check here rather than an afterthought, because the claim this project
+makes is that the numbers are right.
 
 Beyond the original floor, planner and HTTP-contract tests, the suite asserts the properties this
 project is actually about:
@@ -580,6 +714,113 @@ the tests cannot disagree about a floor or an urgency score.
   phrasings, plus the retrievable corpus growing. No model weights are ever updated.
 - **Sessions are per-device and local.** No accounts, no auth, no multi-user. It is a single-operator
   tool for one workspace.
+
+## Roadmap: from demo to a business's real stack
+
+This is the plan for turning ValueAnchor from something you run on your own machine into something a
+business can **wire into its own system**. None of it is implemented yet — it is written down so the
+architecture can be shaped to accept it, and so the demo does not promise more than it does.
+
+> **The aim:** any business app, backend, database or point-of-sale system can plug ValueAnchor in,
+> and get a floor-safe recommendation back through a documented API instead of a screen.
+
+### The integration model, in one picture
+
+```
+     ┌──────────┐   ┌──────────────┐   ┌───────────────┐   ┌─────────────────┐
+     │  POS /   │   │  Their DB    │   │  Their web /  │   │  Their backend  │
+     │  POI     │   │ (Postgres,   │   │  mobile app   │   │  (ERP, CRM,     │
+     │          │   │  MySQL, ...) │   │               │   │   accounting)   │
+     └────┬─────┘   └──────┬───────┘   └──────┬────────┘   └────────┬────────┘
+          │                │                  │                     │
+          └────────────────┴────────┬─────────┴─────────────────────┘
+                                    │  sync / REST  ·  webhooks  ·  embedded widget
+                            ┌───────▼────────┐
+                            │  ValueAnchor   │
+                            │  API gateway   │
+                            └───────┬────────┘
+                                    │
+                    ┌───────────────┼────────────────┐
+                    │               │                │
+             ┌──────▼─────┐  ┌──────▼──────┐  ┌──────▼───────┐
+             │ Local NLU  │  │  Planner +  │  │  Assistant   │
+             │ (per biz)  │  │ profit math │  │ (optional)   │
+             └────────────┘  └─────────────┘  └──────────────┘
+```
+
+### Phase 1 — The integration surface (the first thing to build)
+
+| Step | What it means |
+| --- | --- |
+| **Public REST API** | Promote today's `/api/*` to a versioned, documented public API (`/v1/...`) with an OpenAPI spec, so an integrator never reads our source to use us |
+| **API keys + scopes** | Per-business keys, scoped (read stock / read recommendations / log decisions), rotated from the dashboard |
+| **Webhooks** | Push events outward: `recommendation.created`, `waste.forecast_changed`, `quota.exhausted`, `decision.logged`, so a business's own system reacts without polling |
+| **Embeddable widget** | A one-line `<script>` or iframe that drops the copilot into any existing web app or admin panel |
+| **Idempotency + rate limits** | Every write accepts an idempotency key; every key has a quota, so an API client cannot be more expensive to serve than the UI |
+
+### Phase 2 — Connect the business's own data
+
+ValueAnchor is only as good as the stock it can see, so this is where most of the real work lives.
+
+| Connector class | Examples | Why it matters |
+| --- | --- | --- |
+| **Databases** | PostgreSQL, MySQL, MS SQL, SQLite | Read sell-through and shelf life straight from the system that already knows them |
+| **POS / POI** | Square, Lightspeed, Toast, Shopify, WooCommerce, custom POS | The true rate of sale, which is what every forecast rests on |
+| **Spreadsheets / files** | CSV upload, Google Sheets | The reality for most small businesses today |
+| **Scheduling** | Google Calendar, Calendly, room-booking systems | Turns "empty appointment slots" and "unsold rooms" into the same model as perishable stock |
+| **Accounting** | Xero, QuickBooks | Cost of goods, so "profit" is the business's real margin and not just a price minus a perk |
+
+Each connector needs a **schema mapper** (their columns → our model), a **sync** (scheduled and
+on-demand), and a **conflict rule** for when two systems disagree about how much is on the shelf.
+
+### Phase 3 — Accounts, tenancy and trust
+
+- **Organisations and users** with roles (owner, manager, staff), so a recommendation can require
+  approval from the right person.
+- **Real sign-in** (email + OAuth/SSO) and session management, replacing the demo's single profile.
+- **Strict tenant isolation**: every query and every object scoped to the organisation, with tests
+  that prove one tenant can never read another's stock.
+- **Audit trail that is exportable**, because "why did the system tell me to do that" has to have an
+  answer months later.
+
+### Phase 4 — Production hardening
+
+| Concern | Plan |
+| --- | --- |
+| **Persistence** | Move from SQLite to PostgreSQL, with migrations, backups and point-in-time recovery |
+| **Background work** | A job queue for syncs, retrains and webhook delivery; a scheduler for the daily quota reset and end-of-day forecasts |
+| **Observability** | Structured logs, metrics, traces, error tracking, and an alert when the assistant chain degrades |
+| **Delivery** | Container images, IaC, TLS, a secrets manager — no key ever in a file that ships |
+| **Reliability** | Retries with backoff, circuit breakers per model, health and readiness endpoints |
+| **Offline-first** | A PWA/service worker so the local answers keep working when the network does not |
+
+### Phase 5 — Product depth (where the value compounds)
+
+- **Outcome measurement.** Did the bundle actually sell? Did the floor actually hold? Feed the real
+  result back, so the tool reports *"this raised R4,200 of margin this month"* — a measured number,
+  not a projected one.
+- **Per-business models.** Today one model is trained per sector; the plan is one that also learns
+  each business's own vocabulary over time, with the accuracy trend already recorded per retrain.
+- **Notifications and approvals.** A morning digest by email, SMS, WhatsApp or push; approve or
+  decline a recommendation from the message.
+- **Scenario planning.** "What if I raise the floor to 65%?" answered against a week of real history.
+- **Multi-location.** Compare branches, and share what worked in one with the others.
+
+### Phase 6 — Compliance and the real world
+
+- **Privacy law**: POPIA / GDPR — data residency, retention limits, right to erasure.
+- **Explainability export**: a plain-language account of any recommendation, suitable for a
+  franchisee, an auditor or a franchisor.
+- **Internationalisation**: currencies, number formats, time zones and languages beyond English.
+- **Accessibility**: WCAG-conscious contrast, keyboard navigation and screen-reader labels.
+- **Human-in-the-loop**: nothing is ever auto-applied to a price. The system recommends; a person
+  decides. That stays true in every phase above.
+
+### Deliberately out of scope, for now
+
+Real-time pricing engines, automatic markdown execution, and anything that changes a price without a
+human approving it. The whole product exists to *avoid* reflex discounting, so automating it would be
+the one thing that undoes the point.
 
 ## Project layout
 

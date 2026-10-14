@@ -39,27 +39,17 @@ chain are the ones that were verified to answer this task with valid JSON.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
-OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-
-# Verified against the live free-model list and probed on this exact task:
-#   - super-120b: cleanest plain-language rewrite and a correct off-topic refusal
-#   - lfm-2.5-2.6b: small, fast, also refused off topic correctly
-#   - ultra-550b: strong but sometimes returns JSON double-encoded as a string
-#   - nano-omni-30b: reasoning model, occasionally returns empty content
-# Models that were 429 rate-limited, harness-gated or returned null content were
-# rejected during probing and are deliberately absent.
-DEFAULT_MODEL_CHAIN = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-]
+# The registry owns the default chain and the provider list, so there is one
+# place to look for "which models, talking to what". Imported rather than
+# re-declared: two lists of model names drift apart within a week.
+from .models import DEFAULT_MODEL_CHAIN, DEFAULT_PROVIDER, OPENROUTER_BASE, provider_for
 
 NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 MAX_CONTEXT_DOCS = 8
@@ -91,7 +81,7 @@ class AssistantResult:
             "declineReason": self.decline_reason,
             "guardrail": self.guardrail,
             "attempted": self.attempted,
-            "chain": DEFAULT_MODEL_CHAIN,
+            "chain": [spec["model"] for spec in getattr(self, "_chain", [])] or list(DEFAULT_MODEL_CHAIN),
         }
 
 
@@ -104,18 +94,63 @@ class CopilotAssistant:
         model: str | None = None,
         fallbacks: list[str] | None = None,
         timeout: float = 30.0,
+        *,
+        chain_specs: list[dict[str, Any]] | None = None,
+        on_attempt: Callable[[dict[str, Any], dict[str, Any], dict[str, str]], None] | None = None,
     ) -> None:
+        """Build the assistant over an ordered list of models.
+
+        Two ways in, because both callers are legitimate:
+
+        * ``chain_specs`` from the registry, where each entry carries its own
+          base URL and the name of the environment variable holding its key.
+        * a plain ``api_key`` plus model names, which is what the tests and any
+          single-provider setup use.
+
+        ``on_attempt`` is called after every request with the spec, the outcome
+        and the raw response headers. It is how rate-limit state gets out of this
+        module without this module knowing there is a database at all.
+        """
         self.api_key = (api_key or "").strip() or None
-        chain = [model] if model else []
-        chain.extend(fallbacks or [])
-        ordered = [name for name in chain if name]
-        self.chain = list(dict.fromkeys(ordered)) or list(DEFAULT_MODEL_CHAIN)
         self.timeout = timeout
+        self.on_attempt = on_attempt
         self.last_error: str | None = None
+
+        # ``is not None`` rather than truthiness: an empty list is a deliberate
+        # instruction ("every model is switched off"), not a request for defaults.
+        if chain_specs is not None:
+            self._chain = [dict(spec) for spec in chain_specs]
+        else:
+            names = [name for name in [model, *(fallbacks or [])] if name]
+            ordered = list(dict.fromkeys(names)) or list(DEFAULT_MODEL_CHAIN)
+            self._chain = [
+                {
+                    "model": name,
+                    "provider": DEFAULT_PROVIDER,
+                    "baseUrl": OPENROUTER_BASE,
+                    "apiKeyEnv": "OPENROUTER_API_KEY",
+                }
+                for name in ordered
+            ]
+
+        # Kept for readability at call sites and in logs: the model ids in order.
+        self.chain = [spec["model"] for spec in self._chain]
+
+    def _key_for(self, spec: dict[str, Any]) -> str | None:
+        """The key for one model: its own environment variable, or the default."""
+        env_name = spec.get("apiKeyEnv")
+        if env_name:
+            value = (os.environ.get(env_name) or "").strip()
+            if value:
+                return value
+        return self.api_key
 
     @property
     def configured(self) -> bool:
-        return bool(self.api_key)
+        """True when at least one model in the chain has a usable key."""
+        if self.api_key:
+            return True
+        return any(self._key_for(spec) for spec in self._chain)
 
     # -- scope ------------------------------------------------------------
     @staticmethod
@@ -281,9 +316,42 @@ class CopilotAssistant:
                 return data
         return None
 
-    def _ask(self, model: str, system: str, user: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-        meta: dict[str, Any] = {"model": model, "status": "unknown"}
-        assert self.api_key is not None
+    @staticmethod
+    def limit_metadata(body_text: str) -> tuple[str, str]:
+        """Read ``limit_source`` and the provider's own remedy out of a 429 body.
+
+        OpenRouter explains itself: ``limit_source: openrouter_free_tier_daily``
+        plus a ``remedy_hint``. That is more useful to show than anything we could
+        invent, so it is read and passed through rather than replaced with a
+        generic "rate limited" message nobody can act on.
+        """
+        try:
+            payload = json.loads(body_text or "{}")
+        except ValueError:
+            return "", ""
+        metadata = (payload.get("error") or {}).get("metadata") or {}
+        return str(metadata.get("limit_source") or ""), str(metadata.get("remedy_hint") or "")
+
+    def _ask(
+        self,
+        spec: dict[str, Any],
+        system: str,
+        user: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, str]]:
+        """One request to one model, returning the reply, the outcome and the headers.
+
+        Returns three things because the headers are not diagnostics - they are
+        the rate-limit state, and the caller persists them so the next visitor can
+        be told exactly when the model comes back.
+        """
+        model = spec.get("model") or ""
+        meta: dict[str, Any] = {"model": model, "label": spec.get("label") or model, "status": "unknown"}
+        key = self._key_for(spec)
+        if not key:
+            meta["status"] = "no key"
+            meta["detail"] = f"{spec.get('apiKeyEnv') or 'the key variable'} is empty"
+            return None, meta, {}
+
         payload = {
             "model": model,
             "messages": [
@@ -299,12 +367,13 @@ class CopilotAssistant:
             "max_tokens": 2400,
             "response_format": {"type": "json_object"},
         }
+        base_url = (spec.get("baseUrl") or OPENROUTER_BASE).rstrip("/")
         try:
-            with httpx.Client(base_url=OPENROUTER_BASE, timeout=self.timeout) as client:
+            with httpx.Client(base_url=base_url, timeout=self.timeout) as client:
                 response = client.post(
                     "/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.api_key}",
+                        "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
                         "HTTP-Referer": "https://valueanchor.app",
                         "X-Title": "ValueAnchor Copilot",
@@ -315,37 +384,41 @@ class CopilotAssistant:
             meta["status"] = "unreachable"
             meta["detail"] = str(error)[:180]
             self.last_error = meta["detail"]
-            return None, meta
+            return None, meta, {}
 
+        headers = {name: value for name, value in response.headers.items()}
         if response.status_code == 429:
             meta["status"] = "rate limited"
-            return None, meta
+            source, remedy = self.limit_metadata(response.text)
+            meta["limitSource"] = source
+            meta["detail"] = remedy or response.text[:180]
+            return None, meta, headers
         if response.status_code >= 400:
             meta["status"] = f"http {response.status_code}"
             meta["detail"] = response.text[:180]
-            return None, meta
+            return None, meta, headers
 
         try:
             body = response.json()
         except ValueError:
             meta["status"] = "unreadable response"
-            return None, meta
+            return None, meta, headers
 
         choices = body.get("choices") or []
         if not choices:
             meta["status"] = "no choices returned"
-            return None, meta
+            return None, meta, headers
         message = choices[0].get("message") or {}
         data = self._unwrap(message.get("content"))
         if data is None:
             meta["status"] = "no usable content"
             meta["finishReason"] = choices[0].get("finish_reason")
-            return None, meta
+            return None, meta, headers
         meta["status"] = "answered"
         usage = body.get("usage") or {}
         if usage:
             meta["tokens"] = usage
-        return data, meta
+        return data, meta, headers
 
     # -- public -----------------------------------------------------------
     def rewrite(
@@ -388,8 +461,29 @@ class CopilotAssistant:
             + [f"{doc.get('title')} {doc.get('detail')} {doc.get('text')}" for doc in context]
         )
 
-        for model in self.chain:
-            data, meta = self._ask(model, system, user)
+        for spec in self._chain:
+            # A model already known to be out of quota is skipped instead of
+            # called, so the owner is not made to wait for four refusals that
+            # were already known, and the reason stays the real one.
+            if spec.get("coolingDown"):
+                result.attempted.append(
+                    {
+                        "model": spec.get("model"),
+                        "label": spec.get("label") or spec.get("model"),
+                        "status": "cooling down",
+                        "detail": f"out of quota, back in {spec.get('humanRemaining') or 'a while'}",
+                        "coolingDown": True,
+                        "humanRemaining": spec.get("humanRemaining"),
+                        "secondsRemaining": spec.get("secondsRemaining"),
+                    }
+                )
+                continue
+            data, meta, headers = self._ask(spec, system, user)
+            if self.on_attempt is not None:
+                try:
+                    self.on_attempt(spec, meta, headers)
+                except Exception:  # bookkeeping must never break an answer
+                    pass
             result.attempted.append(meta)
             if data is None:
                 continue
@@ -420,12 +514,107 @@ class CopilotAssistant:
                 continue
 
             result.used = True
-            result.model = model
+            result.model = spec.get("model")
             result.answer = answer
             result.explanation = explanation
             result.guardrail = "every figure in this answer was traced back to your live data"
             return result
 
         if not result.guardrail:
-            result.guardrail = "the assistant was unavailable, so the local model's answer was used"
+            result.guardrail = self._failure_summary(result.attempted)
         return result
+
+    @staticmethod
+    def _failure_summary(attempted: list[dict[str, Any]]) -> str:
+        """Say *why* nothing answered, and when it comes back, in one sentence.
+
+        "The assistant was unavailable" is true and useless. If every model was
+        rate limited, the owner should be told that the free quota is spent and
+        when it resets - that is a fact they can act on, and it is the difference
+        between a tool that looks broken and a tool that is honest about a limit.
+        """
+        if not attempted:
+            return "no language model is configured, so the local model answered"
+        statuses = [entry.get("status") for entry in attempted]
+        if all(status in {"rate limited", "cooling down"} for status in statuses):
+            waits = [
+                entry.get("humanRemaining")
+                for entry in attempted
+                if entry.get("humanRemaining") and entry.get("humanRemaining") != "now"
+            ]
+            wait = waits[0] if waits else None
+            return (
+                "every model in the chain is out of free quota"
+                + (f" and the earliest comes back in {wait}" if wait else "")
+                + ", so the local model's own answer was used"
+            )
+        if all(status == "no key" for status in statuses):
+            return "the configured models have no API key, so the local model answered"
+        return "the assistant was unavailable, so the local model's answer was used"
+
+    # -- probing ----------------------------------------------------------
+    def probe(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """Ask one model a trivial question, to answer "is this one usable?".
+
+        Deliberately cheap - a few tokens and no JSON mode - because its purpose
+        is to test reachability, quota and the key, not answer quality. The
+        headers it returns are the whole point: they say when the model is next
+        usable even when the probe fails.
+        """
+        meta: dict[str, Any] = {"model": spec.get("model"), "status": "unknown"}
+        key = self._key_for(spec)
+        if not key:
+            meta["status"] = "no key"
+            meta["detail"] = f"{spec.get('apiKeyEnv') or 'the key variable'} is empty"
+            return {"ok": False, **meta, "headers": {}}
+        base_url = (spec.get("baseUrl") or OPENROUTER_BASE).rstrip("/")
+        try:
+            with httpx.Client(base_url=base_url, timeout=min(self.timeout, 20.0)) as client:
+                response = client.post(
+                    "/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                        "X-Title": "ValueAnchor Copilot",
+                    },
+                    json={
+                        "model": spec.get("model"),
+                        "messages": [{"role": "user", "content": "Reply with the single word: ready"}],
+                        "max_tokens": 16,
+                    },
+                )
+        except Exception as error:
+            return {"ok": False, "model": spec.get("model"), "status": "unreachable", "detail": str(error)[:180], "headers": {}}
+
+        headers = {name: value for name, value in response.headers.items()}
+        if response.status_code == 429:
+            source, remedy = self.limit_metadata(response.text)
+            return {
+                "ok": False,
+                "model": spec.get("model"),
+                "status": "rate limited",
+                "detail": remedy or response.text[:180],
+                "limitSource": source,
+                "headers": headers,
+            }
+        if response.status_code >= 400:
+            return {
+                "ok": False,
+                "model": spec.get("model"),
+                "status": f"http {response.status_code}",
+                "detail": response.text[:180],
+                "headers": headers,
+            }
+        try:
+            body = response.json()
+        except ValueError:
+            return {"ok": False, "model": spec.get("model"), "status": "unreadable response", "headers": headers}
+        text = ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        return {
+            "ok": True,
+            "model": spec.get("model"),
+            "status": "answered",
+            "reply": str(text).strip()[:120],
+            "tokens": body.get("usage") or {},
+            "headers": headers,
+        }

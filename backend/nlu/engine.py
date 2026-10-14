@@ -25,6 +25,9 @@ Everything runs locally. No weights are downloaded and no text leaves the machin
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import pathlib
 import re
 import statistics
@@ -32,16 +35,28 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import joblib
 import symspellpy
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import FeatureUnion
 
-from .dataset import INTENT_DESCRIPTIONS, INTENT_LABELS, build_training_data
+from .dataset import CORPUS_VERSION, INTENT_DESCRIPTIONS, INTENT_LABELS, build_training_data
 from .lexicon import Lexicon, normalise
 
 ENGLISH_DICTIONARY = pathlib.Path(symspellpy.__file__).parent / "frequency_dictionary_en_82_765.txt"
+
+# The trained classifier is small (a few hundred KB) and is only rebuilt when
+# what it was trained from actually changes. The directory is overridable so
+# tests and read-only deployments can point it somewhere disposable.
+CACHE_DIR = pathlib.Path(
+    os.environ.get("VALUEANCHOR_MODEL_CACHE") or pathlib.Path(__file__).resolve().parent.parent / ".model_cache"
+)
+
+
+def _cache_path() -> pathlib.Path:
+    return CACHE_DIR / "intent_model.joblib"
 
 NUMBER_WORDS = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
@@ -239,69 +254,20 @@ class IntentEngine:
             if example.get("Question") and example.get("Intent") in INTENT_LABELS
         ]
 
-        # Regularisation is chosen once, by cross-validation inside one split's
-        # training templates. The hold-out set plays no part in that choice.
-        first = build_training_data(lexicon, holdout_ratio=holdout_ratio, seed=1)
-        train_texts, train_labels = first["train"]
-        probe_vectorizer = build_vectorizer()
-        probe_features = probe_vectorizer.fit_transform(train_texts)
-        folds = max(2, min(4, min(train_labels.count(intent) for intent in set(train_labels))))
-        best_c, best_cv = GRID[0], -1.0
-        for candidate in GRID:
-            probe = LogisticRegression(max_iter=3000, C=candidate, class_weight="balanced")
-            score = cross_val_score(probe, probe_features, train_labels, cv=folds).mean()
-            if score > best_cv:
-                best_c, best_cv = candidate, score
-        self.regularisation = best_c
-        self.cv_accuracy = round(float(best_cv), 4)
-
-        # Generalisation is measured over several independent splits, because a
-        # single split is a coin toss: with the same corpus, one shuffle reports
-        # 95% and the next 87%. The mean is reported, and so is the spread, so a
-        # number that only looks good on one lucky split cannot pass unnoticed.
-        holdout_scores: list[float] = []
-        holdout_sizes: list[int] = []
-        for seed in range(1, evaluation_splits + 1):
-            data = build_training_data(lexicon, holdout_ratio=holdout_ratio, seed=seed)
-            texts, labels = data["train"]
-            learned_texts, learned_labels = _split_learned(self.learned_examples)
-            if learned_texts:
-                texts = list(texts) + learned_texts
-                labels = list(labels) + learned_labels
-            test_texts, test_labels = data["test"]
-            vectorizer = build_vectorizer()
-            matrix = vectorizer.fit_transform(texts)
-            model = LogisticRegression(max_iter=3000, C=best_c, class_weight="balanced").fit(matrix, labels)
-            predicted = model.predict(vectorizer.transform(test_texts))
-            hit = sum(1 for guess, truth in zip(predicted, test_labels) if guess == truth)
-            holdout_scores.append(hit / max(len(test_labels), 1))
-            holdout_sizes.append(len(test_texts))
-
-        # The shipped model then learns from every phrasing, including the ones
-        # the evaluation held back, plus every question the owner confirmed. The
-        # score above already estimated how it behaves on sentences it has never
-        # seen, so knowing more cannot flatter it.
-        full = build_training_data(lexicon, holdout_ratio=0.0, seed=1)
-        all_texts, all_labels = full["train"]
-        self.learned_rows = len(self.learned_examples)
-        if self.learned_examples:
-            extra_texts, extra_labels = _split_learned(self.learned_examples)
-            all_texts = list(all_texts) + extra_texts
-            all_labels = list(all_labels) + extra_labels
-        self.vectorizer = build_vectorizer()
-        features = self.vectorizer.fit_transform(all_texts)
-        self.classifier = LogisticRegression(max_iter=3000, C=best_c, class_weight="balanced")
-        self.classifier.fit(features, all_labels)
-
-        self.classes = list(self.classifier.classes_)
+        # Training the expanded corpus takes roughly fifteen seconds, which is
+        # far too long to repeat on every restart when nothing has changed. So
+        # the trained model is cached on disk against a fingerprint of everything
+        # it was trained from: the corpus, this business's vocabulary, the
+        # questions the owner has confirmed, and the hyper-parameters. A restart
+        # with an unchanged fingerprint is instant; a new confirmed question or a
+        # bumped corpus version invalidates the file automatically and retrains.
+        self.cache_path = _cache_path()
+        self.cache_fingerprint = self._fingerprint(holdout_ratio, evaluation_splits)
+        self.cached = self._load_cache(self.cache_fingerprint)
+        if not self.cached:
+            self._fit(holdout_ratio)
+            self._save_cache(self.cache_fingerprint)
         self.training_ms = round((time.perf_counter() - started) * 1000, 1)
-        self.train_rows = len(all_texts)
-        self.templates_per_intent = full["templatesPerIntent"]
-        self.feature_count = int(features.shape[1])
-        self.holdout_accuracy = round(statistics.fmean(holdout_scores), 4)
-        self.holdout_std = round(statistics.pstdev(holdout_scores), 4)
-        self.holdout_worst = round(min(holdout_scores), 4)
-        self.holdout_rows = int(round(statistics.fmean(holdout_sizes)))
 
         # Spelling: full English dictionary first, then this business's words on
         # top, so domain terms win but ordinary English is left alone.
@@ -323,6 +289,153 @@ class IntentEngine:
         # classifier on purpose: this class decides what was asked and nothing
         # else, which is what makes it reproducible and testable.
 
+
+    # -- training, and the on-disk cache ---------------------------------
+    def _fit(self, holdout_ratio: float) -> None:
+        """Train the classifier and record how well it generalises.
+
+        Regularisation is chosen by cross-validation inside one split's training
+        templates; the hold-out set plays no part in that choice, so the reported
+        score stays an honest estimate rather than one the model was tuned on.
+        """
+        lexicon = self.lexicon
+        first = build_training_data(lexicon, holdout_ratio=holdout_ratio, seed=1)
+        train_texts, train_labels = first["train"]
+        probe_vectorizer = build_vectorizer()
+        probe_features = probe_vectorizer.fit_transform(train_texts)
+        folds = max(2, min(4, min(train_labels.count(intent) for intent in set(train_labels))))
+        best_c, best_cv = GRID[0], -1.0
+        for candidate in GRID:
+            probe = LogisticRegression(max_iter=3000, C=candidate, class_weight="balanced")
+            score = cross_val_score(probe, probe_features, train_labels, cv=folds).mean()
+            if score > best_cv:
+                best_c, best_cv = candidate, score
+        self.regularisation = best_c
+        self.cv_accuracy = round(float(best_cv), 4)
+
+        # Generalisation is measured over several independent splits, because a
+        # single split is a coin toss: with the same corpus, one shuffle reports
+        # 95% and the next 87%. The mean is reported, and so is the spread, so a
+        # number that only looks good on one lucky split cannot pass unnoticed.
+        holdout_scores: list[float] = []
+        holdout_sizes: list[int] = []
+        for seed in range(1, self.evaluation_splits + 1):
+            data = build_training_data(lexicon, holdout_ratio=holdout_ratio, seed=seed)
+            texts, labels = data["train"]
+            learned_texts, learned_labels = _split_learned(self.learned_examples)
+            if learned_texts:
+                texts = list(texts) + learned_texts
+                labels = list(labels) + learned_labels
+            test_texts, test_labels = data["test"]
+            vectorizer = build_vectorizer()
+            matrix = vectorizer.fit_transform(texts)
+            model = LogisticRegression(max_iter=3000, C=best_c, class_weight="balanced").fit(matrix, labels)
+            predicted = model.predict(vectorizer.transform(test_texts))
+            hit = sum(1 for guess, truth in zip(predicted, test_labels) if guess == truth)
+            holdout_scores.append(hit / max(len(test_texts), 1))
+            holdout_sizes.append(len(test_texts))
+
+        # The shipped model then learns from every phrasing, including the ones
+        # the evaluation held back, plus every question the owner confirmed. The
+        # score above already estimated how it behaves on sentences it has never
+        # seen, so knowing more cannot flatter it.
+        full = build_training_data(lexicon, holdout_ratio=0.0, seed=1)
+        all_texts, all_labels = full["train"]
+        self.learned_rows = len(self.learned_examples)
+        if self.learned_examples:
+            extra_texts, extra_labels = _split_learned(self.learned_examples)
+            all_texts = list(all_texts) + extra_texts
+            all_labels = list(all_labels) + extra_labels
+        self.vectorizer = build_vectorizer()
+        features = self.vectorizer.fit_transform(all_texts)
+        self.classifier = LogisticRegression(max_iter=3000, C=best_c, class_weight="balanced")
+        self.classifier.fit(features, all_labels)
+
+        self.classes = list(self.classifier.classes_)
+        self.train_rows = len(all_texts)
+        self.templates_per_intent = full["templatesPerIntent"]
+        self.feature_count = int(features.shape[1])
+        self.holdout_accuracy = round(statistics.fmean(holdout_scores), 4)
+        self.holdout_std = round(statistics.pstdev(holdout_scores), 4)
+        self.holdout_worst = round(min(holdout_scores), 4)
+        self.holdout_rows = int(round(statistics.fmean(holdout_sizes)))
+
+    def _fingerprint(self, holdout_ratio: float, evaluation_splits: int) -> str:
+        """A hash of everything the trained model depends on.
+
+        The learned examples are part of the key, so confirming a reading in the
+        copilot changes the fingerprint and the model retrains itself - learning
+        takes effect immediately without a restart, which is the whole point of
+        the learning loop.
+        """
+        payload = {
+            "corpusVersion": CORPUS_VERSION,
+            "intents": sorted(INTENT_LABELS),
+            "vocabulary": sorted(self.lexicon.words_for_spelling()),
+            "items": sorted(self.lexicon.item_names),
+            "learned": sorted(self.learned_examples),
+            "holdoutRatio": holdout_ratio,
+            "splits": evaluation_splits,
+            "grid": list(GRID),
+        }
+        raw = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()[:32]
+
+    def _load_cache(self, fingerprint: str) -> bool:
+        """Restore a previously trained model, or say clearly that it could not."""
+        if not self.cache_path.exists():
+            return False
+        try:
+            bundle = joblib.load(self.cache_path)
+        except Exception:
+            # A truncated or incompatible cache is not an error worth stopping
+            # for: the model is simply retrained and the file replaced.
+            return False
+        if bundle.get("fingerprint") != fingerprint or bundle.get("corpusVersion") != CORPUS_VERSION:
+            return False
+        self.vectorizer = bundle["vectorizer"]
+        self.classifier = bundle["classifier"]
+        self.classes = bundle["classes"]
+        self.regularisation = bundle["regularisation"]
+        self.cv_accuracy = bundle["cv_accuracy"]
+        self.holdout_accuracy = bundle["holdoutAccuracy"]
+        self.holdout_std = bundle["holdoutStdDev"]
+        self.holdout_worst = bundle["holdoutWorst"]
+        self.holdout_rows = bundle["holdoutRows"]
+        self.train_rows = bundle["trainRows"]
+        self.feature_count = bundle["featureCount"]
+        self.templates_per_intent = bundle["templatesPerIntent"]
+        self.learned_rows = bundle["learnedRows"]
+        return True
+
+    def _save_cache(self, fingerprint: str) -> None:
+        """Write the trained model down so the next start does not retrain it."""
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump(
+                {
+                    "fingerprint": fingerprint,
+                    "corpusVersion": CORPUS_VERSION,
+                    "trainedAt": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                    "vectorizer": self.vectorizer,
+                    "classifier": self.classifier,
+                    "classes": self.classes,
+                    "regularisation": self.regularisation,
+                    "cv_accuracy": self.cv_accuracy,
+                    "holdoutAccuracy": self.holdout_accuracy,
+                    "holdoutStdDev": self.holdout_std,
+                    "holdoutWorst": self.holdout_worst,
+                    "holdoutRows": self.holdout_rows,
+                    "trainRows": self.train_rows,
+                    "featureCount": self.feature_count,
+                    "templatesPerIntent": self.templates_per_intent,
+                    "learnedRows": self.learned_rows,
+                },
+                self.cache_path,
+            )
+        except Exception:
+            # A cache that cannot be written is a slower start, not a failure.
+            pass
 
     # -- text repair ------------------------------------------------------
     def repair(self, text: str) -> tuple[str, list[dict[str, str]]]:

@@ -397,6 +397,9 @@ def init_db():
     # The learning tables live in the same file, so a backup or a copy of the
     # workspace carries the accumulated learning with it.
     memory.init_memory(db)
+    # The model registry lives here too, so which models the assistant may use
+    # survives a restart exactly like the decisions and the learning do.
+    registry.init_models(db)
     db.commit()
     db.close()
 
@@ -447,9 +450,11 @@ def read_profile(db) -> dict[str, Any]:
 
 # Yield maths lives in exactly one module so the HTTP API, the copilot planner
 # and the tests can never disagree about a floor or an urgency score.
+import yield_engine  # noqa: E402
 from yield_engine import bundle_plan, hours_remaining, inventory_item, load_perks  # noqa: E402
 from nlu import IntentEngine, build_lexicon  # noqa: E402
 from nlu import memory  # noqa: E402
+from nlu import models as registry  # noqa: E402
 from nlu.assistant import AssistantResult, CopilotAssistant  # noqa: E402
 from nlu.dataset import INTENT_LABELS  # noqa: E402
 from nlu.knowledge import KnowledgeBase  # noqa: E402
@@ -513,14 +518,60 @@ def _openrouter_key() -> str | None:
 _load_env_file()
 
 
+def _health_recorder():
+    """A callback the assistant calls after every attempt, to store what happened.
+
+    It opens its own short-lived connection rather than borrowing the request's,
+    because the request has already finished with its connection by the time the
+    assistant runs. Recording is best-effort by design: losing a rate-limit note
+    must never cost the owner an answer.
+    """
+
+    def record(spec: dict, meta: dict, headers: dict) -> None:
+        db = connect()
+        try:
+            status = str(meta.get("status") or "unknown")
+            registry.record_health(
+                db,
+                model_id=str(spec.get("model") or ""),
+                provider=str(spec.get("provider") or registry.DEFAULT_PROVIDER),
+                status=status,
+                detail=str(meta.get("detail") or ""),
+                headers=headers,
+                limit_source=str(meta.get("limitSource") or ""),
+                remedy=str(meta.get("detail") or "") if status == "rate limited" else "",
+            )
+        finally:
+            db.close()
+
+    return record
+
+
 def _assistant() -> CopilotAssistant:
-    """A fresh assistant per call, built from the current environment."""
+    """A fresh assistant per call, built from the model registry.
+
+    Reads the registered chain - which models, in what order, against which
+    endpoint - so changing a model in the UI takes effect on the next question
+    with no restart. Falls back to the environment defaults if the registry has
+    never been seeded.
+    """
+    db = connect()
+    try:
+        specs = registry.resolve_chain(db)
+    finally:
+        db.close()
     fallbacks = [
         name.strip()
         for name in (os.environ.get("OPENROUTER_FALLBACK_MODELS") or "").split(",")
         if name.strip()
     ]
-    return CopilotAssistant(_openrouter_key(), os.environ.get("OPENROUTER_MODEL"), fallbacks)
+    return CopilotAssistant(
+        _openrouter_key(),
+        os.environ.get("OPENROUTER_MODEL"),
+        fallbacks,
+        chain_specs=specs if specs else None,
+        on_attempt=_health_recorder(),
+    )
 
 
 def build_knowledge(db, profile, rows, items, perks, history) -> KnowledgeBase:
@@ -988,10 +1039,21 @@ def nlu_model():
         "Who won the game last night?",
     ]
     card["runsLocally"] = True
-    card["leavesMachine"] = bool(_openrouter_key() and not _assistant().chain == [])
+    assistant_now = _assistant()
+    db = connect()
+    try:
+        configured_models = registry.list_models(db)
+        shared_limit = registry.account_limit(db)
+    finally:
+        db.close()
+    ready_models = [entry for entry in configured_models if entry["enabled"] and entry["hasKey"]]
+    card["leavesMachine"] = bool(assistant_now.configured and ready_models)
     card["assistant"] = {
-        "enabled": bool(_openrouter_key()),
-        "models": _assistant().chain,
+        "enabled": bool(ready_models),
+        "models": assistant_now.chain,
+        "configured": len(configured_models),
+        "ready": len(ready_models),
+        "sharedLimit": shared_limit,
         "role": (
             "Rephrases and explains the engine's answer. It never decides, never computes a figure and is "
             "never consulted about a question that is not about this business."
@@ -1004,6 +1066,163 @@ def nlu_model():
         ],
     }
     return card
+
+
+class ModelRequest(BaseModel):
+    modelId: str
+    provider: str | None = None
+    label: str | None = None
+    baseUrl: str | None = None
+    keyEnv: str | None = None
+    notes: str | None = None
+    enabled: bool | None = None
+
+
+class ModelUpdateRequest(BaseModel):
+    rowId: int
+    modelId: str | None = None
+    provider: str | None = None
+    label: str | None = None
+    baseUrl: str | None = None
+    keyEnv: str | None = None
+    notes: str | None = None
+    enabled: bool | None = None
+    position: int | None = None
+
+
+class ModelOrderRequest(BaseModel):
+    order: list[int]
+
+
+@app.get("/api/models")
+def list_assistant_models():
+    """The configured models, their endpoints, and when each becomes usable again.
+
+    This is the whole point of the registry: the answer to "why is nothing being
+    rewritten, and when can I use this again" is one request away, including the
+    fact that free models share a single daily budget.
+    """
+    db = connect()
+    try:
+        entries = registry.list_models(db)
+        shared = registry.account_limit(db)
+    finally:
+        db.close()
+
+    return {
+        "models": entries,
+        "providers": registry.provider_catalogue(),
+        "sharedLimit": shared,
+        "defaults": {"provider": registry.DEFAULT_PROVIDER, "baseUrl": registry.OPENROUTER_BASE},
+        "howItWorks": (
+            "Models are tried in order until one answers. Each entry carries its own endpoint and the name of "
+            "the environment variable holding its key, so the key itself is never stored here, never sent to "
+            "the browser, and any OpenAI-compatible endpoint can be added - including a local one."
+        ),
+    }
+
+
+@app.post("/api/models")
+def add_assistant_model(request: ModelRequest):
+    """Register any model id. Nothing is validated against a list, on purpose."""
+    db = connect()
+    try:
+        try:
+            result = registry.add_model(
+                db,
+                model_id=request.modelId,
+                provider=request.provider or registry.DEFAULT_PROVIDER,
+                label=request.label,
+                base_url=request.baseUrl,
+                key_env=request.keyEnv,
+                notes=request.notes,
+                enabled=True if request.enabled is None else request.enabled,
+            )
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        result["models"] = registry.list_models(db)
+        return result
+    finally:
+        db.close()
+
+
+@app.post("/api/models/update")
+def update_assistant_model(request: ModelUpdateRequest):
+    db = connect()
+    try:
+        result = registry.update_model(db, request.rowId, request.model_dump())
+        result["models"] = registry.list_models(db)
+        return result
+    finally:
+        db.close()
+
+
+@app.post("/api/models/order")
+def order_assistant_models(request: ModelOrderRequest):
+    db = connect()
+    try:
+        result = registry.reorder(db, request.order)
+        result["models"] = registry.list_models(db)
+        return result
+    finally:
+        db.close()
+
+
+@app.delete("/api/models/{row_id}")
+def delete_assistant_model(row_id: int):
+    db = connect()
+    try:
+        result = registry.remove_model(db, row_id)
+        result["models"] = registry.list_models(db)
+        return result
+    finally:
+        db.close()
+
+
+@app.post("/api/models/probe")
+def probe_assistant_model(request: ModelRequest):
+    """Ask one model a one-word question, and record what the provider says.
+
+    Reachability, key and quota in a single cheap call. The response headers are
+    the valuable part: on a 429 they carry the reset time, which is what turns
+    "rate limited" into "back at 00:00 UTC".
+    """
+    db = connect()
+    try:
+        catalogue = registry.provider_for(request.provider or registry.DEFAULT_PROVIDER)
+        spec = {
+            "model": request.modelId,
+            "provider": request.provider or registry.DEFAULT_PROVIDER,
+            "baseUrl": request.baseUrl or catalogue["baseUrl"],
+            "apiKeyEnv": request.keyEnv or catalogue["keyEnv"],
+            "label": request.label or request.modelId,
+        }
+        outcome = _assistant().probe(spec)
+        health = registry.record_health(
+            db,
+            model_id=spec["model"],
+            provider=spec["provider"],
+            status=str(outcome.get("status") or "unknown"),
+            detail=str(outcome.get("detail") or ""),
+            headers=outcome.get("headers") or {},
+            limit_source=str(outcome.get("limitSource") or ""),
+            remedy=str(outcome.get("detail") or "") if outcome.get("status") == "rate limited" else "",
+        )
+        return {
+            "probe": {key: value for key, value in outcome.items() if key != "headers"},
+            "rateLimit": {
+                "limit": health.get("LimitValue"),
+                "remaining": health.get("Remaining"),
+                "resetAt": health.get("ResetAt"),
+                "availableAt": health.get("AvailableAt"),
+                "secondsRemaining": health.get("secondsRemaining"),
+                "humanRemaining": health.get("humanRemaining"),
+                "limitSource": health.get("LimitSource"),
+            },
+            "sharedLimit": registry.account_limit(db),
+        }
+    finally:
+        db.close()
 
 
 @app.get("/api/copilot/suggestions")
@@ -1089,7 +1308,66 @@ def analyze(payload: dict[str, int]):
         raise HTTPException(404, "Inventory item not found")
     perks = db.execute("SELECT * FROM Perks WHERE AvailableStock > 0 ORDER BY Type, CostToBusiness").fetchall()
     db.close()
-    return {"profile": profile, **bundle_plan(item, perks, profile)}
+    return {
+        "profile": profile,
+        **bundle_plan(item, perks, profile),
+        # The three-way money comparison travels with the plan, so the Inventory
+        # tab can show what each option keeps rather than only what to do.
+        "profit": yield_engine.profit_scenarios(item, perks, profile),
+    }
+
+
+class ProfitRequest(BaseModel):
+    itemId: int
+    markdownPercent: float | None = None
+
+
+class PairRequest(BaseModel):
+    itemIds: list[int]
+    markdownPercent: float | None = None
+
+
+@app.post("/api/profit/scenarios")
+def profit_for_item(request: ProfitRequest):
+    """Cost one live line three ways: let it lapse, cut the price, or add value.
+
+    This is the endpoint behind "if I do this, what do I keep" - it returns the
+    cash per unit for each option, the total, and what the recommendation has to
+    do to be worth choosing.
+    """
+    db = connect()
+    try:
+        profile, _rows, _items, perks, _history = load_context(db)
+        row = db.execute("SELECT * FROM Inventory WHERE ItemID = ?", (request.itemId,)).fetchone()
+        if not row:
+            raise HTTPException(404, "That line is not in the live inventory")
+        percent = request.markdownPercent if request.markdownPercent is not None else 20.0
+        return {
+            "profile": profile,
+            **yield_engine.profit_scenarios(row, perks, profile, percent),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/profit/pair")
+def profit_for_pair(request: PairRequest):
+    """Cost a pairing line by line, so one bad half cannot hide in a good total."""
+    if not request.itemIds:
+        raise HTTPException(400, "Name at least one line to pair")
+    db = connect()
+    try:
+        profile, _rows, _items, perks, _history = load_context(db)
+        rows = [
+            row
+            for item_id in request.itemIds[:3]
+            if (row := db.execute("SELECT * FROM Inventory WHERE ItemID = ?", (item_id,)).fetchone())
+        ]
+        if not rows:
+            raise HTTPException(404, "None of those lines are in the live inventory")
+        return {"profile": profile, **yield_engine.bundle_pair_profit(rows, perks, profile)}
+    finally:
+        db.close()
 
 
 @app.post("/api/strategy/decide")
