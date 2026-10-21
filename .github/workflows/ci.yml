@@ -43,8 +43,11 @@ jobs:
 
       - name: Byte-compile every module
         # Cheap and fails fast: a syntax error anywhere is caught before the
-        # suite spends ninety seconds importing the app.
-        run: python -m compileall -q app.py yield_engine.py nlu tests
+        # suite spends ninety seconds importing the app. Every module that ships
+        # is listed, including the evaluation set, the MCP server and the /v1
+        # router - a file the suite imports by accident is not the same thing as
+        # a file that is checked.
+        run: python -m compileall -q app.py api_v1.py mcp_server.py openedge.py yield_engine.py nlu evals tests
 
       - name: Run the suite with coverage
         # No OPENROUTER_API_KEY is set, so the network assistant switches itself
@@ -52,6 +55,17 @@ jobs:
         env:
           VALUEANCHOR_DB: ${{ runner.temp }}/ci-valueanchor.db
         run: pytest tests -q
+
+      - name: Score the evaluation set
+        # The suite already runs this set in a subprocess; stating it as its own
+        # step puts the score in the CI log instead of burying it in one pytest
+        # line. Exit 0 needs every case judged and every one of them passing -
+        # a skipped case, and therefore a truncated run, fails the job.
+        env:
+          VALUEANCHOR_DB: ${{ runner.temp }}/ci-evals.db
+          # Empty, so the scored run is the offline engine rather than a model's.
+          OPENROUTER_API_KEY: ""
+        run: python -m evals.run_evals
 
       - name: Coverage summary
         if: always()

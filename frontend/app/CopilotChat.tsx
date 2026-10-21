@@ -335,6 +335,15 @@ export default function CopilotChat({
               </div>
             </article>
           ))}
+          {suggestions && suggestions.groups.length === 0 && (
+            <article className="starter-group">
+              <b>There is no stock to ask about yet</b>
+              <small>
+                This workspace has no rows, so every question would come back with nothing to read. Link a
+                database on the OpenEdge tab and the same rows become askable here.
+              </small>
+            </article>
+          )}
           {!suggestions && (
             <article className="starter-group">
               <b>Try one of these</b>
@@ -478,7 +487,7 @@ function AnswerCard({
       {data.nlu.needsClarification && data.nlu.reply.clarifyOptions.length > 0 && (
         <div className="clarify-row">
           <small>I can read that more than one way — which did you mean?</small>
-          <div className="phrase-chips">
+          <div className="phrase-chips" title="Picking one teaches the model your phrasing for good. Either way the answer is priced against your live numbers.">
             {data.nlu.reply.clarifyOptions.map((option, index) => (
               <button
                 key={`${option.intent}-${index}`}
@@ -511,12 +520,14 @@ function AnswerCard({
       <div className="answer-actions">
         <button
           className="work-toggle"
+          title="Opens what this answer read and the arithmetic it did: the intent, the records, and each figure with its source."
           onClick={() => setShowRationale({ ...showRationale, [data.turnId]: !rationale })}
         >
           <Gauge size={12} /> How it worked this out <ChevronDown size={12} className={rationale ? 'flip' : ''} />
         </button>
         <button
           className="work-toggle"
+          title="The records this question retrieved out of your live data, each with its kind and how relevant it was."
           onClick={() => setOpenSources({ ...openSources, [data.turnId]: !sources })}
         >
           <Layers size={12} /> Where this came from ({data.sources.length}) <ChevronDown size={12} className={sources ? 'flip' : ''} />
@@ -524,6 +535,7 @@ function AnswerCard({
         <div className="vote">
           <button
             aria-label="This was helpful"
+            title="Marks this answer useful. A vote never changes the model on its own - only a reading you confirm does."
             className={voted[data.turnId] === 1 ? 'on' : ''}
             onClick={() => vote(data.turnId, 1, data.nlu.intent)}
           >
@@ -531,6 +543,7 @@ function AnswerCard({
           </button>
           <button
             aria-label="This was not helpful"
+            title="Marks this answer unhelpful. It is recorded but never taught, so a wrong answer cannot be reinforced."
             className={voted[data.turnId] === -1 ? 'bad' : ''}
             onClick={() => vote(data.turnId, -1)}
           >

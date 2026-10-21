@@ -1,13 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, BarChart3, Bell, ChevronRight, CircleHelp, Clock3, Cpu, Filter, GraduationCap, Layers3, Menu, PackageCheck, Search, Settings2, ShieldCheck, Sparkles, X, Zap } from 'lucide-react'
+import { ArrowUpRight, BarChart3, Bell, ChevronRight, CircleHelp, Clock3, Filter, Menu, PackageCheck, Plug, Search, Settings2, ShieldCheck, Sparkles, X, Zap } from 'lucide-react'
 import CopilotChat from './CopilotChat'
-import ModelsTab from './ModelsTab'
+import OpenEdgeTab from './OpenEdgeTab'
+import SettingsTab from './SettingsTab'
 
 type Inventory = { itemId:number; itemName:string; category:string; sector:string; basePrice:number; hoursRemaining:number; velocityIndex:number; urgencyScore:number; riskStatus:string; unitsAvailable:number; unitsSold:number; totalCapacity:number }
-type Profile = { sector:string; name:string; businessName:string; blurb:string; inventoryNoun:string; itemLabel:string; heroLine:string; sampleQuestion:string; marginFloorPct:number; currencyCode:string; currencySymbol:string }
-type Sector = { slug:string; name:string; businessName:string; blurb:string; inventoryNoun:string }
+type Profile = { sector:string; name:string; businessName:string; blurb:string; inventoryNoun:string; itemLabel:string; heroLine:string; sampleQuestion:string; marginFloorPct:number; currencyCode:string; currencySymbol:string; floorSource?:string; floorOwnerSet?:boolean; connected?:boolean }
 type Perk = { PerkName:string; RetailValue:number; CostToBusiness:number }
 type Tier = { tier:number; label:string; status:'funded'|'deferred'|'withheld'; perk:Perk|null }
 type ProfitScenario = { key:string; label:string; cashPerUnit:number; floorRespected:boolean; perkCost:number; unitsMoved:number; cash:number; writeOff:number|null; verdict:string; detail:string }
@@ -18,12 +18,9 @@ type ProfitBreakdown = {
   breakeven:{ ratio:number; extraPercent:number; direction:string; ifBundled:number; ifMarkedDown:number; explanation:string }|null;
   deferred:{ amount:number; note:string }; notModelled:string
 }
-type PairLine = { itemId:number; itemName:string; category:string; shelfPrice:number; floorPerUnit:number; marginPerUnit:number; headroomPerUnit:number; perkCost:number; unitsOnShelf:number; valueOnShelf:number; profitIfAllSells:number; hoursRemaining:number; verdict:string; perks:string[] }
-type PairResult = { lines:PairLine[]; combined:{ valueOnShelf:number; profitIfAllSells:number; perkCostToday:number; deferredToNextVisit:number; lines:number }; verdict:string; method:string }
 type Analysis = { profile:Profile; item:Inventory; metrics:{ marginPreserved:number; marginThreshold:number; deferredCommitment:number; floorRespected:boolean; urgencyScore:number; velocityIndex:number }; recommendation:{ headline:string; action:string; marginRetained:number; tiers:Tier[] }; profit:ProfitBreakdown }
-type Decision = { strategyId:number; itemId:number; itemLabel:string; category:string; sector:string; managerDecision:string; unitsFilled:number; marginRetained:number; createdTimestamp:string }
-type Tab = 'Overview' | 'Inventory' | 'Strategies' | 'Guardrails' | 'Copilot AI' | 'Models'
-
+type Decision = { strategyId:number; itemId:number; itemLabel:string; category:string; sector:string; managerDecision:string; unitsFilled:number; marginRetained:number; createdTimestamp:string };
+type Tab = 'Overview' | 'Inventory' | 'Copilot AI' | 'OpenEdge' | 'Settings'
 type Learning = {
   turns:number; helpful:number; unhelpful:number; confirmedReadings:number; learnedExamples:number;
   learnedPerIntent:Record<string, number>;
@@ -49,8 +46,16 @@ type NluModel = {
   assistant:{ enabled:boolean; models:string[]; role:string; guardrails:string[] }
 }
 
-const TABS: Tab[] = ['Overview', 'Inventory', 'Strategies', 'Guardrails', 'Copilot AI', 'Models']
-const TAB_ICON: Record<Tab, string> = { Overview:'bars', Inventory:'package', Strategies:'layers', Guardrails:'shield', 'Copilot AI':'sparkles', Models:'cpu' }
+// Five tabs, down from nine. The two that were cut - Spreadsheet and Strategies
+// - were stock-*writing* paths: a sheet you pasted figures into, and a preset
+// picker that chose which demo business to seed. Both are gone because stock
+// arrives through Link this database on the OpenEdge tab now, and a second way
+// in would be a second source of truth. Guardrails moved into Settings and the
+// decision log into Copilot AI, where the decisions are actually made, so
+// nothing an owner could do became unreachable - it just stopped being a place
+// you had to visit to find one control.
+const TABS: Tab[] = ['Overview', 'Inventory', 'Copilot AI', 'OpenEdge', 'Settings']
+const TAB_ICON: Record<Tab, string> = { Overview:'bars', Inventory:'package', 'Copilot AI':'sparkles', OpenEdge:'plug', Settings:'settings' }
 
 // Clarifying chips do not guess at a rephrasing: they send the original question
 // back with the chosen intent, which the engine then takes as confirmed.
@@ -60,7 +65,6 @@ const glyph = (category:string) => /pastry|cake|bake|bread/i.test(category) ? '�
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('Overview')
   const [profile, setProfile] = useState<Profile | null>(null)
-  const [sectors, setSectors] = useState<Sector[]>([])
   const [items, setItems] = useState<Inventory[]>([])
   const [history, setHistory] = useState<Decision[]>([])
   const [selected, setSelected] = useState<Inventory | null>(null)
@@ -69,6 +73,10 @@ export default function Home() {
   const [notice, setNotice] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [onlyAtRisk, setOnlyAtRisk] = useState(false)
+  // "Loaded and empty" is a different state from "still loading": without this
+  // flag the table says "Loading live inventory..." forever when a workspace has
+  // no rows yet, which reads as a hang rather than as the next thing to do.
+  const [loaded, setLoaded] = useState(false)
   const [model, setModel] = useState<NluModel | null>(null)
   const [learning, setLearning] = useState<Learning | null>(null)
   const [knowledge, setKnowledge] = useState<Knowledge | null>(null)
@@ -76,14 +84,6 @@ export default function Home() {
   // tab - is handed to the one chat rather than opening a second conversation.
   const [queued, setQueued] = useState<{ text:string; nonce:number } | null>(null)
   const queue = (text:string) => setQueued({ text, nonce: Date.now() })
-  // The pairing tool: pick up to three live lines and cost the bundle line by
-  // line, so a pairing that loses money on the second item cannot hide behind a
-  // healthy total. Selection is capped at three because that is what the cost
-  // model is honest about, and picking a fourth simply drops the oldest.
-  const [pair, setPair] = useState<number[]>([])
-  const [pairResult, setPairResult] = useState<PairResult | null>(null)
-  const [pairing, setPairing] = useState(false)
-  const togglePair = (id:number) => setPair(current => current.includes(id) ? current.filter(value => value !== id) : [...current.slice(Math.max(0, current.length - 2)), id])
   // The whole product is about what lapses before close, so a stale date in the
   // header would undercut it. Set after mount so the server and client render the
   // same markup and hydration stays quiet.
@@ -109,8 +109,10 @@ export default function Home() {
       const body = await response.json()
       setProfile(body.profile)
       setItems(body.items)
+      setLoaded(true)
       setNotice('')
     } catch {
+      setLoaded(true)
       setNotice(`Backend offline. Start FastAPI on port 8000 to load live ${profile?.inventoryNoun ?? 'inventory'}.`)
     }
   }
@@ -124,28 +126,13 @@ export default function Home() {
       setHistory([])
     }
   }
-  const loadSectors = () => fetch(`${API}/api/sectors`).then(response => response.json()).then(setSectors).catch(() => setSectors([]))
   const loadModel = () => fetch(`${API}/api/nlu/model`).then(response => response.json()).then(setModel).catch(() => setModel(null))
   const loadLearning = () => fetch(`${API}/api/learning`).then(response => response.json()).then(setLearning).catch(() => setLearning(null))
   const loadKnowledge = () => fetch(`${API}/api/knowledge`).then(response => response.json()).then(setKnowledge).catch(() => setKnowledge(null))
 
-  useEffect(() => { loadInventory(); loadSectors() }, [])
-  useEffect(() => { if (activeTab === 'Strategies') loadHistory() }, [activeTab])
+  useEffect(() => { loadInventory() }, [])
+  useEffect(() => { if (activeTab === 'Copilot AI') loadHistory() }, [activeTab])
   useEffect(() => { if (activeTab === 'Copilot AI') { loadModel(); loadLearning(); loadKnowledge() } }, [activeTab])
-
-  const switchSector = async (slug:string) => {
-    if (!profile || slug === profile.sector) return
-    setSelected(null); setAnalysis(null); setNotice(''); setOnlyAtRisk(false)
-    try {
-      const response = await fetch(`${API}/api/profile/sector`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ sector: slug }) })
-      if (!response.ok) throw new Error('switch failed')
-      setProfile(await response.json())
-      await loadInventory()
-      await loadHistory()
-    } catch {
-      setNotice('Could not switch sector. Is the yield engine running on port 8000?')
-    }
-  }
 
   const analyze = async (item:Inventory) => {
     setSelected(item); setLoading(true); setAnalysis(null)
@@ -174,21 +161,6 @@ export default function Home() {
     }
   }
 
-  const costPair = async () => {
-    if (pair.length === 0) return
-    setPairing(true)
-    try {
-      const response = await fetch(`${API}/api/profit/pair`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ itemIds: pair }) })
-      if (!response.ok) throw new Error('pair failed')
-      setPairResult(await response.json())
-      setNotice('')
-    } catch {
-      setNotice('Could not cost that pairing. Is the backend on port 8000?')
-    } finally {
-      setPairing(false)
-    }
-  }
-
   const noun = profile?.inventoryNoun ?? 'inventory'
 
   return <main>
@@ -196,14 +168,6 @@ export default function Home() {
     <aside className={`rail${menuOpen ? ' open' : ''}`}>
       <button className="rail-close" aria-label="Close navigation" onClick={() => setMenuOpen(false)}><X size={18}/></button>
       <div className="brand"><div className="brand-mark">V</div><span>Value<br/><b>Anchor</b></span></div>
-      <div className="sector-card">
-        <p className="eyebrow">ACTIVE BUSINESS</p>
-        <b>{profile?.businessName ?? 'Connecting…'}</b>
-        <select aria-label="Choose the business sector" value={profile?.sector ?? 'coffee'} onChange={event => switchSector(event.target.value)}>
-          {(sectors.length ? sectors : [{ slug:'coffee', name:'Coffee shop', businessName:'', blurb:'', inventoryNoun:'' }]).map(sector => <option key={sector.slug} value={sector.slug}>{sector.name}</option>)}
-        </select>
-        <small>{profile?.blurb ?? 'Loading presets…'}</small>
-      </div>
       <nav>{TABS.map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} aria-current={activeTab === tab} onClick={() => { setActiveTab(tab); setMenuOpen(false) }}>{tabIcon(tab)} {tab}</button>)}</nav>
       <div className="rail-bottom"><a><Settings2 size={18}/>Settings</a><a><CircleHelp size={18}/>Support</a><div className="profile"><div className="avatar">AM</div><div><b>Alex Morgan</b><small>Yield manager</small></div></div></div>
     </aside>
@@ -219,7 +183,7 @@ export default function Home() {
           <div>
             <p className="eyebrow accent">YIELD CONTROL CENTER</p>
             <h2>Protect the price floor.<br/><em>{profile?.heroLine ?? 'Capture the next sale.'}</em></h2>
-            <p className="hero-copy">Runs on a {profile?.name.toLowerCase() ?? 'coffee shop'} preset, and on any business<br className="desktop"/> that sells stock or capacity before it lapses. Ask the copilot a question and it answers from the live numbers, with its working shown.</p>
+            <p className="hero-copy">{profile?.connected ? `Running on the stock read from ${profile.businessName},` : `Runs on the ${(profile?.name ?? 'coffee shop').toLowerCase()} preset,`} and on any business<br className="desktop"/> that sells stock or capacity before it lapses. Ask the copilot a question and it answers from the live numbers, with its working shown.</p>
           </div>
           <div className="hero-orb">
             <div className="orb-ring ring-1"/><div className="orb-ring ring-2"/>
@@ -230,82 +194,16 @@ export default function Home() {
         </div>
         <CopilotChat api={API} business={profile?.businessName ?? 'your business'} sample={profile?.sampleQuestion ?? 'Which batch needs attention first?'}/>
         <div className="metrics">
-          <Metric icon={<PackageCheck/>} label={`Active ${noun}`} value={String(items.length).padStart(2,'0')} detail={`across ${categories} ${categories === 1 ? 'category' : 'categories'}`} tone="blue"/>
-          <Metric icon={<Zap/>} label="At-risk lines" value={String(atRisk.length).padStart(2,'0')} detail="need attention today" tone="orange"/>
-          <Metric icon={<ArrowUpRight/>} label="Units at risk" value={String(unitsAtRisk)} detail={`unsold in ${noun}`} tone="purple"/>
-          <Metric icon={<ShieldCheck/>} label="Margin floor" value={`${profile?.marginFloorPct ?? 60}%`} detail="no markdowns below it" tone="green"/>
+          <Metric icon={<PackageCheck/>} label={`Active ${noun}`} value={String(items.length).padStart(2,'0')} detail={`across ${categories} ${categories === 1 ? 'category' : 'categories'}`} tone="blue" hint={`Counted from the live ${noun} this workspace holds - the same rows the copilot reads.`}/>
+          <Metric icon={<Zap/>} label="At-risk lines" value={String(atRisk.length).padStart(2,'0')} detail="need attention today" tone="orange" hint="The engine's own call: time running out and little of the line sold. Not a forecast - a ranking of what is on the shelf now."/>
+          <Metric icon={<ArrowUpRight/>} label="Units at risk" value={String(unitsAtRisk)} detail={`unsold in ${noun}`} tone="purple" hint="Unsold units on those at-risk lines, counted from the shelf. Nothing is estimated."/>
+          <Metric icon={<ShieldCheck/>} label="Margin floor" value={`${profile?.marginFloorPct ?? 60}%`} detail="no markdowns below it" tone="green" hint={`What every answer prices against: ${profile?.marginFloorPct ?? 60}% of shelf price. Change it on the Settings tab.`}/>
         </div>
       </>}
 
-      {activeTab === 'Strategies' && <div className="tab-panel">
-        <p className="eyebrow accent">BUNDLE COSTING</p>
-        <h2>Bundle two or three lines and see what each one keeps</h2>
-        <p>Pick up to three live {noun} below. Each line is costed on its own — shelf price less the perks that fit above its own floor — so a pairing that quietly loses money on the second item cannot hide behind a healthy total. Nothing here assumes an uplift in sales; the number is what each line keeps if it sells, and where it only breaks even you are told that in words.</p>
-        <div className="phrase-chips pair-picker">
-          {items.map(item => <button key={item.itemId} className={pair.includes(item.itemId) ? 'on' : ''} aria-pressed={pair.includes(item.itemId)} onClick={() => togglePair(item.itemId)}>{item.itemName}<em>{money(item.basePrice)}</em></button>)}
-        </div>
-        <div className="model-add-actions">
-          <button className="primary-action" disabled={pairing || pair.length === 0} onClick={costPair}>{pairing ? 'Costing…' : `Cost this pairing (${pair.length})`}</button>
-          {pair.length > 0 && <button className="ghost" onClick={() => { setPair([]); setPairResult(null) }}>Clear</button>}
-        </div>
+      {activeTab === 'OpenEdge' && <OpenEdgeTab api={API} />}
 
-        {pairResult && <>
-          <div className="pair-lines">
-            {pairResult.lines.map(line => <div className={`pair-line ${line.verdict === 'makes money' ? 'good' : line.verdict === 'thin' ? 'warn' : 'bad'}`} key={line.itemId}>
-              <div className="pair-line-head">
-                <b>{line.itemName}</b>
-                <span className={`status ${line.verdict === 'makes money' ? 'healthy' : line.verdict === 'thin' ? 'watch' : 'critical'}`}>{line.verdict}</span>
-              </div>
-              <div className="pair-metrics">
-                <div><small>SHELF PRICE</small><b>{money(line.shelfPrice)}</b></div>
-                <div><small>FLOOR / UNIT</small><b>{money(line.floorPerUnit)}</b></div>
-                <div><small>PROFIT / UNIT</small><b>{money(line.marginPerUnit)}</b></div>
-                <div><small>HEADROOM</small><b className={line.headroomPerUnit < 0 ? 'bad' : 'ok'}>{line.headroomPerUnit < 0 ? `−${money(Math.abs(line.headroomPerUnit))}` : money(line.headroomPerUnit)}</b></div>
-                <div><small>PROFIT IF ALL SELLS</small><b>{money(line.profitIfAllSells)}</b></div>
-                <div><small>ON SHELF</small><b>{line.unitsOnShelf} · {line.hoursRemaining < 24 ? `${Math.max(1, Math.round(line.hoursRemaining))}h` : `${Math.round(line.hoursRemaining / 24)}d`}</b></div>
-              </div>
-              {line.perks.length > 0 && <small className="pair-perks">Value added: {line.perks.join(' + ')}</small>}
-            </div>)}
-          </div>
-          <div className="pair-total">
-            <div><small>VALUE ON SHELF</small><b>{money(pairResult.combined.valueOnShelf)}</b></div>
-            <div><small>PROFIT IF EVERY LINE SELLS</small><b className="ok">{money(pairResult.combined.profitIfAllSells)}</b></div>
-            <div><small>PERK COST TODAY</small><b>{money(pairResult.combined.perkCostToday)}</b></div>
-            <div><small>DEFERRED TO NEXT VISIT</small><b>{money(pairResult.combined.deferredToNextVisit)}</b></div>
-          </div>
-          <p className="pair-verdict">{pairResult.verdict}</p>
-          <p className="modal-note">{pairResult.method}</p>
-        </>}
-      </div>}
-
-      {activeTab === 'Strategies' && <div className="tab-panel">
-        <p className="eyebrow accent">STRATEGY HISTORY</p>
-        <h2>Decisions that protect margin</h2>
-        {history.length === 0
-          ? <>
-              <p>No decisions logged yet. Approve or decline a yield action and it is recorded here automatically, labelled with the item and sector it belonged to.</p>
-              <button className="primary-action" onClick={() => setActiveTab('Inventory')}>Review live {noun} <ArrowUpRight size={15}/></button>
-            </>
-          : <div className="history-list">{history.map(entry => <div className="history-row" key={entry.strategyId}>
-              <div className="item-name"><div className={`item-icon ${entry.category.toLowerCase().replace(/[^a-z]/g,'')}`}>{glyph(entry.category)}</div><div><b>{entry.itemLabel}</b><small>{entry.category} · ID-{entry.itemId}</small></div></div>
-              <div className="history-meta"><small>DECISION</small><span className={`decision ${entry.managerDecision.toLowerCase()}`}>{entry.managerDecision}</span></div>
-              <div className="history-meta"><small>UNITS FILLED</small><b>{entry.unitsFilled}</b></div>
-              <div className="history-meta"><small>MARGIN RETAINED</small><b>{money(entry.marginRetained)}</b></div>
-              <div className="history-meta"><small>LOGGED</small><b>{new Date(entry.createdTimestamp).toLocaleString('en-ZA', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</b></div>
-            </div>)}</div>}
-      </div>}
-
-      {activeTab === 'Guardrails' && <div className="tab-panel">
-        <p className="eyebrow accent">MARGIN GUARDRAILS</p>
-        <h2>Price floors stay sacred</h2>
-        <p>ValueAnchor recommends value perks only while preserved margin remains above the threshold this business set. Nothing here can trigger a markdown.</p>
-        <div className="guardrail-row"><span>Minimum retained margin</span><strong>{profile?.marginFloorPct ?? 60}%</strong></div>
-        <div className="guardrail-row"><span>Discounting allowed</span><strong className="blocked">Never</strong></div>
-        <div className="guardrail-row"><span>Active business preset</span><strong>{profile?.name ?? 'Coffee shop'}</strong></div>
-        <div className="guardrail-row"><span>Reporting currency</span><strong>{profile?.currencyCode ?? 'ZAR'} ({profile?.currencySymbol ?? 'R'})</strong></div>
-      </div>}
-
-      {activeTab === 'Models' && <ModelsTab />}
+      {activeTab === 'Settings' && <SettingsTab api={API} />}
 
       {activeTab === 'Copilot AI' && <>
         <div className="tab-panel">
@@ -417,6 +315,25 @@ export default function Home() {
             onLearning={info => setLearning(current => current ? { ...current, learnedExamples: info.learnedExamples, turns: info.turns } : current)}
           />
         </div>
+      {activeTab === 'Copilot AI' && <div className="tab-panel">
+        {/* The decision log sits where decisions are made: the copilot turns a
+            question into a recommendation, and this is the record of what was
+            then approved or declined. */}
+        <h2>Decisions that protect margin</h2>
+        {history.length === 0
+          ? <>
+              <p>No decisions logged yet. Approve or decline a yield action and it is recorded here automatically, labelled with the item and sector it belonged to.</p>
+              <button className="primary-action" onClick={() => setActiveTab('Inventory')}>Review live {noun} <ArrowUpRight size={15}/></button>
+            </>
+          : <div className="history-list">{history.map(entry => <div className="history-row" key={entry.strategyId}>
+              <div className="item-name"><div className={`item-icon ${entry.category.toLowerCase().replace(/[^a-z]/g,'')}`}>{glyph(entry.category)}</div><div><b>{entry.itemLabel}</b><small>{entry.category} · ID-{entry.itemId}</small></div></div>
+              <div className="history-meta"><small>DECISION</small><span className={`decision ${entry.managerDecision.toLowerCase()}`}>{entry.managerDecision}</span></div>
+              <div className="history-meta"><small>UNITS FILLED</small><b>{entry.unitsFilled}</b></div>
+              <div className="history-meta"><small>MARGIN RETAINED</small><b>{money(entry.marginRetained)}</b></div>
+              <div className="history-meta"><small>LOGGED</small><b>{new Date(entry.createdTimestamp).toLocaleString('en-ZA', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</b></div>
+            </div>)}</div>}
+      </div>}
+
       </>}
 
       {(activeTab === 'Overview' || activeTab === 'Inventory') && <>
@@ -434,14 +351,25 @@ export default function Home() {
         <div className="table-card">
           <div className="table-head"><span>{noun.toUpperCase()}</span><span>PRICE FLOOR</span><span>TIME LEFT</span><span>VELOCITY</span><span>STATUS</span><span/></div>
           {visible.length === 0
-            ? <div className="table-empty">{items.length === 0 ? `Loading live ${noun}…` : `Nothing is at risk. All ${items.length} lines are tracking above the floor.`}</div>
+            ? !loaded
+              ? <div className="table-empty">Reading live {noun}…</div>
+              : items.length === 0
+                ? <div className="table-empty">
+                    <b>No {noun} in this workspace yet.</b>
+                    Nothing can be ranked, costed or answered about until there are rows to read. Link a database
+                    on the OpenEdge tab and its stock lands here - the same rows the copilot will answer from.
+                    <div className="model-add-actions">
+                      <button className="primary-action" onClick={() => setActiveTab('OpenEdge')}>Link this database <ArrowUpRight size={15}/></button>
+                    </div>
+                  </div>
+                : <div className="table-empty">Nothing is at risk. All {items.length} lines are tracking above the floor.</div>
             : visible.map(item => <div className="table-row" key={item.itemId}>
-                <div className="item-name"><div className={`item-icon ${item.category.toLowerCase().replace(/[^a-z]/g,'')}`}>{glyph(item.category)}</div><div><b>{item.itemName}</b><small>{item.category} · ID-{item.itemId}</small></div></div>
-                <strong>{money(item.basePrice)}</strong>
-                <div className="time"><Clock3 size={15}/><b>{item.hoursRemaining < 24 ? `${Math.max(1, Math.round(item.hoursRemaining))}h` : `${Math.round(item.hoursRemaining / 24)}d`}</b><small>remaining</small></div>
-                <div className="velocity"><div className="bar"><i style={{ width:`${Math.min(100, item.velocityIndex * 100)}%` }}/></div><b>{Math.round(item.velocityIndex * 100)}%</b></div>
-                <div><span className={`status ${item.riskStatus}`}>{item.riskStatus === 'healthy' ? 'Healthy' : item.riskStatus === 'critical' ? 'Critical' : 'Watch'}</span></div>
-                <button className="action-btn" onClick={() => analyze(item)}>Generate yield action <ArrowUpRight size={15}/></button>
+                <div className="item-name" title={`${item.itemName} - ${item.category}, line ${item.itemId}. The subject of any question you ask about it.`}><div className={`item-icon ${item.category.toLowerCase().replace(/[^a-z]/g,'')}`}>{glyph(item.category)}</div><div><b>{item.itemName}</b><small>{item.category} · ID-{item.itemId}</small></div></div>
+                <strong title={`Shelf price ${money(item.basePrice)} - what a customer pays today. Your floor on this line is ${profile?.marginFloorPct ?? 60}% of that: ${money(Math.round(item.basePrice * (profile?.marginFloorPct ?? 60) / 100))}. Nothing is recommended below it.`}>{money(item.basePrice)}</strong>
+                <div className="time" title="How long is left before this line lapses, counted from its expiry - not an estimate."><Clock3 size={15}/><b>{item.hoursRemaining < 24 ? `${Math.max(1, Math.round(item.hoursRemaining))}h` : `${Math.round(item.hoursRemaining / 24)}d`}</b><small>remaining</small></div>
+                <div className="velocity" title={`Share of this line already sold: ${item.unitsSold} of ${item.totalCapacity}. With the hours left, this is what sets the urgency.`}><div className="bar"><i style={{ width:`${Math.min(100, item.velocityIndex * 100)}%` }}/></div><b>{Math.round(item.velocityIndex * 100)}%</b></div>
+                <div><span className={`status ${item.riskStatus}`} title={item.riskStatus === 'critical' ? 'Critical: little sold and little time left, so this line is first in line for attention.' : item.riskStatus === 'watch' ? 'Watch: time is passing faster than it is selling. Worth a look before close.' : 'Healthy: selling at a pace that should clear before it lapses.'}>{item.riskStatus === 'healthy' ? 'Healthy' : item.riskStatus === 'critical' ? 'Critical' : 'Watch'}</span></div>
+                <button className="action-btn" title="Costs this line three ways - let it lapse, or add value instead of cutting the price - and shows what each one keeps against its floor." onClick={() => analyze(item)}>Generate yield action <ArrowUpRight size={15}/></button>
               </div>)}
         </div>
       </>}
@@ -493,9 +421,8 @@ function tabIcon(tab:Tab) {
   const kind = TAB_ICON[tab]
   if (kind === 'bars') return <BarChart3 size={18}/>
   if (kind === 'package') return <PackageCheck size={18}/>
-  if (kind === 'layers') return <Layers3 size={18}/>
-  if (kind === 'shield') return <ShieldCheck size={18}/>
-  if (kind === 'cpu') return <Cpu size={18}/>
+  if (kind === 'plug') return <Plug size={18}/>
+  if (kind === 'settings') return <Settings2 size={18}/>
   return <Sparkles size={18}/>
 }// One line of explanation per kind of retrieved record, so the retrieval panel
 // says what the copilot can look up rather than naming an internal category.
@@ -511,6 +438,8 @@ const TYPE_NOTE: Record<string, string> = {
 
 
 
-function Metric({icon,label,value,detail,tone}:{icon:React.ReactNode;label:string;value:string;detail:string;tone:string}) {
-  return <div className="metric"><div className={`metric-icon ${tone}`}>{icon}</div><div><small>{label}</small><strong>{value}</strong><span>{detail}</span></div></div>
+// `hint` is the hover line: where a figure is counted from, so nobody has to guess
+// whether a number is a count, a forecast or a setting.
+function Metric({icon,label,value,detail,tone,hint}:{icon:React.ReactNode;label:string;value:string;detail:string;tone:string;hint?:string}) {
+  return <div className="metric" title={hint}><div className={`metric-icon ${tone}`}>{icon}</div><div><small>{label}</small><strong>{value}</strong><span>{detail}</span></div></div>
 }

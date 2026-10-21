@@ -10,15 +10,25 @@ import time
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, TypeAdapter, field_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 ROOT = Path(__file__).resolve().parent
 # The database path is overridable so tests and demos can run against a scratch
 # file instead of the working dataset.
 DB_PATH = Path(os.environ.get("VALUEANCHOR_DB") or ROOT / "valueanchor.db")
 DEFAULT_SECTOR = "coffee"
+# The slug used when the active business is one a business pushed to us through
+# /v1 rather than one of the built-in presets. It is deliberately not a key in
+# SECTORS: a connected business supplies its own stock, so there is no preset to
+# read a name, a noun or a floor from.
+CONNECTED_SECTOR = "connected"
+# A line with no time signal still has to live in Inventory, whose
+# ExpirationTimestamp is NOT NULL. It is stored long-dated so it reads as "not
+# lapsing" rather than as lapsing today; nothing pretends it has a real date.
+NO_TIME_SIGNAL_EXPIRY = "9999-12-31T23:59:59+00:00"
 
 # ---------------------------------------------------------------------------
 # Sector presets
@@ -175,6 +185,14 @@ SECTORS: dict[str, dict[str, Any]] = {
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    # Honest /v1 integration surface: ensure the owned-store table exists so the
+    # read path is never started against a DB that lacks it.
+    db = connect()
+    try:
+        from api_v1 import _ensure_v1_store
+        _ensure_v1_store(db)
+    finally:
+        db.close()
     db = connect()
     try:
         refreshed = refresh_stale_sector(db)
@@ -233,6 +251,18 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# Honest /v1 integration surface for a mobile app or backend to call.
+
+# This is the owned mapped store and read path a mobile app actually integrates
+# against. It is intentionally separate from the copilot's /api/* surface: the
+# copilot answers questions; /v1 is the honest integration contract.
+from api_v1 import router as v1_router  # noqa: E402
+import api_v1  # noqa: E402
+
+app.include_router(v1_router)
+
+
 class DecisionRequest(BaseModel):
     """Field names match the dashboard's JSON exactly.
 
@@ -255,18 +285,6 @@ class DecisionRequest(BaseModel):
         return value
 
 
-class SectorRequest(BaseModel):
-    sector: str
-
-    @field_validator("sector")
-    @classmethod
-    def known_sector(cls, value: str) -> str:
-        slug = value.strip().lower()
-        if slug not in SECTORS:
-            raise ValueError(f"Unknown sector '{value}'")
-        return slug
-
-
 class CurrencyRequest(BaseModel):
     currencyCode: str
     currencySymbol: str
@@ -286,6 +304,17 @@ class CurrencyRequest(BaseModel):
         if not 1 <= len(symbol) <= 3:
             raise ValueError("currencySymbol must be one to three characters")
         return symbol
+
+
+class GuardrailRequest(BaseModel):
+    """An owner moving the one number the whole product is built around.
+
+    ``null`` is a real instruction rather than a missing field: it means go back
+    to the floor this workspace came with - the sector preset, or the floor the
+    connected business supplied when it pushed its stock.
+    """
+
+    marginFloorPct: float | None = Field(default=None, ge=10.0, le=95.0)
 
 
 class CopilotRequest(BaseModel):
@@ -376,6 +405,12 @@ def init_db():
     """)
     ensure_columns(db, "Inventory", {"Sector": "TEXT", "ItemName": "TEXT"})
     ensure_columns(db, "StrategyHistory", {"ItemLabel": "TEXT", "Category": "TEXT", "Sector": "TEXT"})
+    # A connected business needs to remember its own name and floor, because there
+    # is no preset to read them from.
+    ensure_columns(db, "Profile", {"BusinessName": "TEXT", "Connected": "INTEGER DEFAULT 0", "ConnectedFloorPct": "REAL", "ConnectedFloorSource": "TEXT"})
+    # An owner-set floor is stored separately from the one a workspace came with,
+    # so the original is never overwritten and can be restored by clearing it.
+    ensure_columns(db, "Profile", {"OwnerFloorPct": "REAL"})
     db.execute("UPDATE Inventory SET ItemName = Category WHERE ItemName IS NULL OR ItemName = ''")
     db.execute("UPDATE Inventory SET Sector = ? WHERE Sector IS NULL OR Sector = ''", (DEFAULT_SECTOR,))
     db.execute("""
@@ -418,10 +453,15 @@ def refresh_stale_sector(db) -> str | None:
         return None
     if any(hours_remaining(row["ExpirationTimestamp"]) > 0 for row in rows):
         return None
-    slug = db.execute("SELECT SectorSlug FROM Profile WHERE ProfileID = 1").fetchone()["SectorSlug"]
-    seed_sector(db, slug)
+    active = db.execute("SELECT SectorSlug, Connected FROM Profile WHERE ProfileID = 1").fetchone()
+    if active["Connected"]:
+        # A connected business's stock is the business's, not ours to replace with a
+        # preset. Re-seeding here would silently throw away the pushed workspace and
+        # answer questions about a coffee shop that the owner never asked about.
+        return None
+    seed_sector(db, active["SectorSlug"])
     db.commit()
-    return slug
+    return active["SectorSlug"]
 
 
 def sector_preset(slug: str) -> dict[str, Any]:
@@ -430,9 +470,75 @@ def sector_preset(slug: str) -> dict[str, Any]:
     return SECTORS[slug]
 
 
+FLOOR_STATED = "stated by the client"
+FLOOR_DERIVED = "derived from the floors the pushed lines carried"
+FLOOR_ASSUMED = "assumed, because the pushed lines carried no floor"
+FLOOR_PRESET = "the sector preset for this workspace"
+# The floor is the one number the product is built around, so it is also the one
+# an owner is allowed to move. Which of these happened to it is reported next to
+# the number itself, everywhere the profile is read, so a floor that was assumed
+# can never read as a floor the business stated.
+FLOOR_OWNER = "set by the owner on the Settings tab"
+
+
+def connected_profile(row) -> dict[str, Any]:
+    """The profile for a business whose stock was read out of its own database.
+
+    There is no preset behind it, so every field comes from the link itself or
+    from an honest default. The floor is the one field with a real risk of being
+    invented or mis-described, so which of the three things happened to it is
+    stored at connect time and repeated here in the blurb, in the words the API
+    returns to the client as ``floorSource``.
+    """
+    name = row["BusinessName"] or "Connected business"
+    supplied = row["ConnectedFloorPct"]
+    owner = row["OwnerFloorPct"]
+    floor_pct = int(round(supplied)) if supplied is not None else 60
+    source = row["ConnectedFloorSource"] or FLOOR_ASSUMED
+    if owner is not None:
+        # An owner who set a floor on the Settings tab outranks the one the link
+        # carried: a person deciding about their own business beats a default the
+        # database happened to imply, and the blurb says which of the two it is.
+        floor_pct = int(round(owner))
+        source = FLOOR_OWNER
+        blurb = f"Linked business - stock read from OpenEdge, {floor_pct}% floor set by the owner"
+    elif source == FLOOR_STATED:
+        blurb = f"Linked business - stock read from OpenEdge, {floor_pct}% floor stated by the client"
+    elif source == FLOOR_DERIVED:
+        blurb = f"Linked business - stock read from OpenEdge, {floor_pct}% floor derived from the linked lines"
+    else:
+        blurb = (
+            "Linked business - stock read from OpenEdge, with no margin floor supplied, "
+            "so a 60% floor is assumed until one is given"
+        )
+    return {
+        "sector": CONNECTED_SECTOR,
+        "name": name,
+        "businessName": name,
+        "blurb": blurb,
+        "inventoryNoun": "lines",
+        "itemLabel": "Line",
+        "heroLine": "Capture the next sale.",
+        "sampleQuestion": "Which line needs attention first?",
+        "marginFloorPct": floor_pct,
+        "floorSource": source,
+        "floorOwnerSet": owner is not None,
+        # A pushed business is not a preset, and a screen that cannot tell the two
+        # apart will offer to switch away from the owner's own stock and call the
+        # pushed name a "coffee shop preset". So the distinction is reported.
+        "connected": True,
+        "currencyCode": row["CurrencyCode"],
+        "currencySymbol": row["CurrencySymbol"],
+    }
+
+
 def read_profile(db) -> dict[str, Any]:
     row = db.execute("SELECT * FROM Profile WHERE ProfileID = 1").fetchone()
+    if row["Connected"]:
+        return connected_profile(row)
     preset = sector_preset(row["SectorSlug"])
+    owner = row["OwnerFloorPct"]
+    floor_pct = int(round(owner)) if owner is not None else preset["marginFloorPct"]
     return {
         "sector": row["SectorSlug"],
         "name": preset["name"],
@@ -442,7 +548,10 @@ def read_profile(db) -> dict[str, Any]:
         "itemLabel": preset["itemLabel"],
         "heroLine": preset["heroLine"],
         "sampleQuestion": preset["sampleQuestion"],
-        "marginFloorPct": preset["marginFloorPct"],
+        "marginFloorPct": floor_pct,
+        "floorSource": FLOOR_OWNER if owner is not None else FLOOR_PRESET,
+        "floorOwnerSet": owner is not None,
+        "connected": False,
         "currencyCode": row["CurrencyCode"],
         "currencySymbol": row["CurrencySymbol"],
     }
@@ -450,6 +559,12 @@ def read_profile(db) -> dict[str, Any]:
 
 # Yield maths lives in exactly one module so the HTTP API, the copilot planner
 # and the tests can never disagree about a floor or an urgency score.
+import mcp_server  # noqa: E402
+import re
+
+import openedge  # noqa: E402
+import openedge_bridge  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 import yield_engine  # noqa: E402
 from yield_engine import bundle_plan, hours_remaining, inventory_item, load_perks  # noqa: E402
 from nlu import IntentEngine, build_lexicon  # noqa: E402
@@ -601,6 +716,77 @@ def load_context(db) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[st
     return profile, rows, items, perks, history
 
 
+def connect_business(
+    db,
+    business_name: str,
+    lines: list[dict[str, Any]],
+    margin_floor_pct: float | None = None,
+    floor_source: str | None = None,
+) -> dict[str, Any]:
+    """Load a business read out of its own database into the copilot's workspace.
+
+    This is the bridge between the two halves of the product. ``/v1`` keeps the
+    honest mapped copy the integration contract promises, but the copilot, the
+    planner and the retrieval corpus all read ``Inventory`` and ``Profile``. A
+    business a client pushes is only *answerable* once it has been written here,
+    so this writes it and makes it the active business.
+
+    Honest rules, stated rather than hidden:
+
+    * The floor comes from what the caller supplied, else from the floors the lines
+      themselves carried. If neither exists, a default is assumed and the profile
+      says so rather than quietly presenting it as the business's own.
+    * A line with no time signal is stored long-dated, so it reads as "not lapsing"
+      rather than as lapsing today. Nothing invents a date for it.
+    * Logged decisions are left alone, exactly as a sector switch leaves them.
+    """
+    now = datetime.now(timezone.utc)
+    db.execute("DELETE FROM Inventory")
+    db.executemany(
+        "INSERT INTO Inventory (ItemID, Sector, ItemName, Category, BasePrice, ExpirationTimestamp, TotalCapacity, UnitsSold, BookingVelocity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                100 + index,
+                CONNECTED_SECTOR,
+                line["itemName"],
+                line["category"],
+                line["basePrice"],
+                line.get("expirationTimestamp") or NO_TIME_SIGNAL_EXPIRY,
+                line["totalCapacity"],
+                line["unitsSold"],
+                0.0,
+            )
+            for index, line in enumerate(lines, start=1)
+        ],
+    )
+
+    stated = margin_floor_pct is not None
+    if margin_floor_pct is None:
+        # No floor was stated by the caller, so take the one the lines themselves
+        # imply. The middle value is used rather than the mean, so one oddly-priced
+        # line cannot drag the whole business's floor with it.
+        implied = sorted(
+            line["floorPrice"] / line["basePrice"] * 100
+            for line in lines
+            if line.get("floorPrice") is not None and line["basePrice"]
+        )
+        margin_floor_pct = implied[len(implied) // 2] if implied else None
+
+    if floor_source is None:
+        floor_source = (
+            FLOOR_STATED if stated else FLOOR_DERIVED if margin_floor_pct is not None else FLOOR_ASSUMED
+        )
+
+    db.execute(
+        "UPDATE Profile SET SectorSlug = ?, BusinessName = ?, Connected = 1, "
+        "ConnectedFloorPct = ?, ConnectedFloorSource = ?, OwnerFloorPct = NULL, "
+        "UpdatedTimestamp = ? WHERE ProfileID = 1",
+        (CONNECTED_SECTOR, business_name, margin_floor_pct, floor_source, now.isoformat()),
+    )
+    db.commit()
+    return read_profile(db)
+
+
 def engine_for(
     profile: dict[str, Any],
     items: list[dict[str, Any]],
@@ -636,6 +822,21 @@ def engine_for(
         return cached
 
 
+def retrain_active(profile: dict[str, Any], items: list[dict[str, Any]]) -> None:
+    """Drop stale conversations and warm the engine for the newly active business.
+
+    Shared by a sector switch and by connecting a pushed business, because both
+    replace the inventory the copilot was answering about. Item ids are reused
+    across workspaces, so keeping the old conversation would resolve a follow-up
+    question to a stranger's line.
+    """
+    with _SESSION_LOCK:
+        _SESSIONS.clear()
+    # Retraining takes a few seconds, so it happens off the request path: the
+    # switch stays instant and the first question asked is still fast.
+    threading.Thread(target=engine_for, args=(profile, items), daemon=True).start()
+
+
 def session_state(session_id: str) -> dict[str, Any]:
     with _SESSION_LOCK:
         if session_id not in _SESSIONS and len(_SESSIONS) >= MAX_SESSIONS:
@@ -648,12 +849,19 @@ def health():
     return {"status": "ok", "service": "ValueAnchor"}
 
 
-@app.get("/api/sectors")
-def list_sectors():
-    return [
-        {"slug": slug, "name": preset["name"], "businessName": preset["businessName"], "blurb": preset["blurb"], "inventoryNoun": preset["inventoryNoun"]}
-        for slug, preset in SECTORS.items()
-    ]
+# The three preset routes that used to live here - GET /api/sectors,
+# POST /api/profile/sector and POST /api/profile/reseed - are gone, and so is
+# the request model behind the sector switch. They were the ways a workspace
+# chose which built-in demo business to seed, which is stock the product typed
+# for itself rather than stock a business's own system of record holds.
+#
+# ``SECTORS`` itself stays: it is not a write path, it is the vocabulary the
+# copilot answers in (the active preset's inventory noun and business name) and
+# the retrieval corpus indexes it. The empty-workspace fallback still seeds the
+# coffee preset so a first-time visitor has something to ask about, and a
+# profile that was already switched to a preset still reads. What is gone is the
+# ability to pick a new one from the UI, which is the whole point: stock now
+# arrives through Link this database or it does not arrive.
 
 
 @app.get("/api/profile")
@@ -661,25 +869,6 @@ def get_profile():
     db = connect()
     profile = read_profile(db)
     db.close()
-    return profile
-
-
-@app.post("/api/profile/sector")
-def set_sector(request: SectorRequest):
-    db = connect()
-    db.execute("UPDATE Profile SET SectorSlug = ?, UpdatedTimestamp = ? WHERE ProfileID = 1", (request.sector, datetime.now(timezone.utc).isoformat()))
-    seed_sector(db, request.sector)
-    profile = read_profile(db)
-    items = [inventory_item(row) for row in db.execute("SELECT * FROM Inventory").fetchall()]
-    db.commit()
-    db.close()
-    # Item ids are reused across sectors, so any conversation that was pointing
-    # at the old inventory is dropped rather than resolved to a stranger's line.
-    with _SESSION_LOCK:
-        _SESSIONS.clear()
-    # Retraining takes a few seconds, so it happens off the request path: the
-    # switch stays instant and the first question in the new sector is fast.
-    threading.Thread(target=engine_for, args=(profile, items), daemon=True).start()
     return profile
 
 
@@ -694,6 +883,38 @@ def set_currency(request: CurrencyRequest):
     db.commit()
     db.close()
     return profile
+
+
+@app.post("/api/profile/guardrails")
+def set_guardrails(request: GuardrailRequest):
+    """Store, or clear, the owner's own margin floor.
+
+    This is not a preference: ``bundle_plan``, the pairing costs, the profit
+    scenarios and every copilot answer read the floor off the profile, so writing
+    it here changes what the whole workspace is allowed to recommend. That is
+    exactly why the floor's source is written beside it rather than quietly
+    overwriting the one the business arrived with.
+    """
+    db = connect()
+    before = read_profile(db)["marginFloorPct"]
+    floor = None if request.marginFloorPct is None else int(round(request.marginFloorPct))
+    db.execute(
+        "UPDATE Profile SET OwnerFloorPct = ?, UpdatedTimestamp = ? WHERE ProfileID = 1",
+        (floor, datetime.now(timezone.utc).isoformat()),
+    )
+    db.commit()
+    profile = read_profile(db)
+    db.close()
+    if floor is None:
+        note = f"Floor cleared, back to {profile['marginFloorPct']}% - {profile['floorSource']}."
+    elif before == profile["marginFloorPct"]:
+        note = f"Floor unchanged at {profile['marginFloorPct']}%."
+    else:
+        note = (
+            f"Floor moved from {before}% to {profile['marginFloorPct']}%. "
+            "Every bundle, pairing and copilot answer is priced against it from now on."
+        )
+    return {"profile": profile, "note": note, "floorSource": profile["floorSource"]}
 
 
 @app.get("/api/inventory")
@@ -1352,19 +1573,34 @@ def profit_for_item(request: ProfitRequest):
 
 @app.post("/api/profit/pair")
 def profit_for_pair(request: PairRequest):
-    """Cost a pairing line by line, so one bad half cannot hide in a good total."""
+    """Cost a pairing line by line, so one bad half cannot hide in a good total.
+
+    A line that is not in the live inventory is refused by name rather than
+    quietly left out of the total. The difference matters: dropping it would
+    answer a question about two lines with the cost of one, in a confident
+    voice and with no sign that anything was missing - which is the exact
+    failure this endpoint exists to prevent, one level up.
+    """
     if not request.itemIds:
         raise HTTPException(400, "Name at least one line to pair")
     db = connect()
     try:
         profile, _rows, _items, perks, _history = load_context(db)
-        rows = [
-            row
-            for item_id in request.itemIds[:3]
-            if (row := db.execute("SELECT * FROM Inventory WHERE ItemID = ?", (item_id,)).fetchone())
-        ]
-        if not rows:
-            raise HTTPException(404, "None of those lines are in the live inventory")
+        rows = []
+        missing = []
+        for item_id in request.itemIds[:3]:
+            row = db.execute("SELECT * FROM Inventory WHERE ItemID = ?", (item_id,)).fetchone()
+            if row:
+                rows.append(row)
+            else:
+                missing.append(item_id)
+        if missing:
+            raise HTTPException(
+                404,
+                f"Not in the live inventory: {', '.join(str(item_id) for item_id in missing)}."
+                " Nothing was costed, because a pairing that quietly leaves a line out is"
+                " a total for a different pairing.",
+            )
         return {"profile": profile, **yield_engine.bundle_pair_profit(rows, perks, profile)}
     finally:
         db.close()
@@ -1429,6 +1665,369 @@ def strategy_history(limit: int = 20, sector: str | None = None):
             }
             for row in rows
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The MCP surface
+#
+# The hackathon shape is that the OpenEdge side gets a *tool surface* rather than
+# a prompt full of numbers, so this mounts ValueAnchor's own MCP server at
+# POST /mcp. Every tool calls the same function its HTTP route calls, which is the
+# whole point: the two surfaces cannot drift into two slightly different products,
+# and a figure handed to an agent is the same figure the dashboard shows.
+# ---------------------------------------------------------------------------
+
+
+def _for_tool(call, *args, **kwargs):
+    """Run an API function on behalf of an MCP tool.
+
+    A refusal the HTTP API would answer with a status code - a line that is not in
+    the live inventory, a decision about a line that does not exist - becomes a
+    tool refusal here, so an agent reads it as a fact about the business rather
+    than as a broken server.
+    """
+    try:
+        return call(*args, **kwargs)
+    except HTTPException as refusal:
+        raise mcp_server.ToolRefusal(str(refusal.detail)) from refusal
+
+
+def mcp_toolkit() -> "mcp_server.Toolkit":
+    """The six tools, in terms of the code the HTTP API already uses."""
+
+    def guardrails(_arguments: dict) -> dict:
+        db = connect()
+        try:
+            profile = read_profile(db)
+        finally:
+            db.close()
+        return {
+            "activeBusiness": profile["businessName"],
+            "sector": profile["sector"],
+            "currencyCode": profile["currencyCode"],
+            "currencySymbol": profile["currencySymbol"],
+            "marginFloorPct": profile["marginFloorPct"],
+            "floorSource": profile["floorSource"],
+            "floorOwnerSet": profile["floorOwnerSet"],
+            "connected": profile["connected"],
+            "markdowns": "never - this engine has no discount path at all",
+            "appliesTo": "every bundle, pairing and copilot answer in this workspace",
+        }
+
+    def urgent_stock(arguments: dict) -> dict:
+        db = connect()
+        try:
+            profile, _rows, items, _perks, _history = load_context(db)
+        finally:
+            db.close()
+        ranked = sorted(items, key=lambda item: item["urgencyScore"], reverse=True)
+        eligible = (
+            ranked
+            if arguments.get("includeHealthy")
+            else [item for item in ranked if item["riskStatus"] != "healthy"]
+        )
+        limit = int(arguments.get("limit") or 5)
+        answer: dict[str, Any] = {
+            "business": profile["businessName"],
+            "marginFloorPct": profile["marginFloorPct"],
+            "currencySymbol": profile["currencySymbol"],
+            "linesOnTheBooks": len(items),
+            "linesUnderPressure": len(eligible),
+            "returned": len(eligible[:limit]),
+            "ranking": "urgencyScore weighs hours until the stock lapses against how little of it has sold",
+            "lines": eligible[:limit],
+        }
+        if not eligible:
+            answer["note"] = (
+                f"Every one of the {len(items)} live lines is healthy right now, so nothing is "
+                "lapsing. Pass includeHealthy to see the whole shelf anyway."
+            )
+        return answer
+
+    def analyze_line(arguments: dict) -> dict:
+        return _for_tool(analyze, {"itemId": arguments["itemId"]})
+
+    def pair_lines(arguments: dict) -> dict:
+        return _for_tool(profit_for_pair, PairRequest(itemIds=arguments["itemIds"]))
+
+    def ask(arguments: dict) -> dict:
+        answer = _for_tool(
+            copilot,
+            CopilotRequest(
+                question=arguments["question"],
+                sessionId=arguments.get("sessionId") or "mcp-session",
+            ),
+        )
+        return {
+            "answer": answer.get("answer"),
+            "headline": answer.get("headline"),
+            "meaning": answer.get("meaning"),
+            "severity": answer.get("severity"),
+            "answeredBy": answer.get("source"),
+            "understoodAs": (answer.get("nlu") or {}).get("intentLabel"),
+            "inScope": answer.get("inScope"),
+            "guardrail": answer.get("guardrail"),
+            "figures": answer.get("keyNumbers") or [],
+            "nextSteps": [step.get("label") for step in (answer.get("nextSteps") or [])],
+            "answeredFrom": [
+                {"kind": source.get("kind"), "title": source.get("title"), "detail": source.get("detail")}
+                for source in (answer.get("sources") or [])[:6]
+            ],
+        }
+
+    def log_decision(arguments: dict) -> dict:
+        item_id = arguments["itemId"]
+        decision = arguments["managerDecision"]
+        # The action and the money come from the live plan rather than from what a
+        # model remembered, so the log can never hold a figure the engine did not
+        # compute. Anything that had to be filled in says so in the reply.
+        analysis = _for_tool(analyze, {"itemId": item_id})
+        item = analysis["item"]
+        recommendation = analysis["recommendation"]
+        defaults: list[str] = []
+        action = arguments.get("recommendedAction")
+        if not action:
+            action = recommendation["action"]
+            defaults.append("recommendedAction was taken from the live plan for this line")
+        units = arguments.get("unitsFilled")
+        if units is None:
+            units = 0 if decision == "Declined" else max(1, round(item["unitsAvailable"] * 0.4))
+            defaults.append(f"unitsFilled was taken as {units}, the same default the dashboard uses")
+        margin = arguments.get("marginRetained")
+        if margin is None:
+            margin = recommendation["marginRetained"]
+            defaults.append(f"marginRetained was taken from the live plan ({margin})")
+        logged = _for_tool(
+            decide,
+            DecisionRequest(
+                itemId=item_id,
+                recommendedAction=action,
+                managerDecision=decision,
+                unitsFilled=int(units),
+                marginRetained=float(margin),
+            ),
+        )
+        return {
+            "logged": True,
+            "strategyId": logged["strategyId"],
+            "item": item["itemName"],
+            "managerDecision": decision,
+            "recommendedAction": action,
+            "unitsFilled": int(units),
+            "marginRetained": float(margin),
+            "defaultedFields": defaults,
+            "note": (
+                "The log keeps what was decided, not what was recommended. Nothing here rewrites "
+                "history: to change a decision, log the decision that replaces it."
+            ),
+        }
+
+    return {
+        "valueanchor_guardrails": guardrails,
+        "valueanchor_urgent_stock": urgent_stock,
+        "valueanchor_analyze_line": analyze_line,
+        "valueanchor_pair_lines": pair_lines,
+        "valueanchor_ask": ask,
+        "valueanchor_log_decision": log_decision,
+    }
+
+
+@app.post("/mcp")
+async def mcp(request: Request):
+    """The MCP endpoint: one POST, one JSON-RPC message, one JSON response.
+
+    A notification carries no id and takes no response, so it is answered with 202
+    and an empty body, which is what the transport asks for. A body that is not
+    JSON at all is reported as a parse error rather than as a 500, because "what
+    arrived was not JSON" and "something broke here" are different problems.
+    """
+    raw = await request.body()
+    try:
+        payload = mcp_server.parse_message(raw)
+    except mcp_server.ParseError as broken:
+        return JSONResponse(mcp_server.parse_failure(str(broken)), status_code=400)
+    messages = payload if isinstance(payload, list) else [payload]
+    toolkit = mcp_toolkit()
+    responses = [
+        response
+        for message in messages
+        if (response := mcp_server.handle_message(message, toolkit)) is not None
+    ]
+    if not responses:
+        return JSONResponse({}, status_code=202)
+    return JSONResponse(responses if isinstance(payload, list) else responses[0])
+
+
+@app.get("/api/openedge/status")
+def openedge_status(request: Request, probe: bool = False):
+    """Where the OpenEdge integration stands, in both directions.
+
+    Inbound - this server's own MCP surface - needs nothing installed, so it is
+    reported as available. Outbound needs software an owner installs and points at
+    their own database, so it reports nothing-called rather than unreachable until
+    it is pointed at something. ``?probe=true`` is what turns a configured address
+    into actual network calls, and it is opt-in because a status page should not
+    quietly wait on someone else's server.
+    """
+    base = str(request.base_url).rstrip("/")
+    return openedge.status(base, probe_endpoints=probe)
+
+
+@app.get("/api/openedge/link/status")
+def openedge_link_status():
+    """What the local read-only bridge can see, before anything is run.
+
+    This is not the outbound probe above. That one asks software an owner
+    installs; this one looks at this machine, for the Developers Kit and for the
+    coffee database the starter kit builds. The two are reported separately
+    because they are different claims: a missing MCP Server is not a broken
+    AVM, and an owner who has installed the kit should be told it was found.
+
+    ``blockers`` names what is missing in the owner's own words - no AVM, no
+    program, no database - because those three have three different fixes and a
+    single "unavailable" would leave the owner guessing which.
+    """
+    return openedge_bridge.status()
+
+
+class OpenEdgeLinkIn(BaseModel):
+    """Ask the bridge for the rows, optionally naming the database."""
+
+    database: str = Field(default="coffee", min_length=1, max_length=80)
+
+
+@app.post("/api/openedge/link")
+def openedge_link(payload: OpenEdgeLinkIn):
+    """Read the business's stock out of its own OpenEdge database.
+
+    This is the path that replaces hand-typed figures. It runs one ABL program,
+    ``06-enquiry-json.p``, whose only statement over data is a ``FOR EACH`` with
+    ``NO-LOCK``: there is no write path here, and no argument can name a
+    different program, table or database. The database is a *name*, resolved to
+    a storage file beside the backend, so it cannot be turned into a path that
+    reaches elsewhere.
+
+    A refusal is a 400 with the reason in words rather than an empty 200: no AVM
+    installed, a database that was never seeded and a database somebody else is
+    serving are three different problems, and the owner needs the difference.
+    The rows are then handed to ``upsert_business_stock`` - the same function
+    the push endpoint calls - so a linked shelf and a pushed shelf are one shelf
+    and cannot drift into two.
+    """
+    name = (payload.database or "").strip()
+    if not name:
+        raise HTTPException(400, "A database name is required, e.g. 'coffee'.")
+    if any(sep in name for sep in ("/", "\\", "..")):
+        raise HTTPException(400, "'database' is a name, not a path; it cannot contain separators.")
+
+    result = openedge_bridge.call_tool("openedge_read_stock", {"database": name})
+    if result.get("isError"):
+        reason = (result.get("structuredContent") or {}).get("reason", "The bridge refused.")
+        raise HTTPException(400, reason)
+
+    read = result["structuredContent"]
+    business_name = read.get("businessName") or ""
+    if not business_name:
+        raise HTTPException(
+            422,
+            "The database returned no business name, so there is nothing honest to file "
+            "these rows under. Seed it with 04-seed-coffee.p.",
+        )
+
+    # One identity, derived from the database's own name for the business. The
+    # id is derived rather than invented so relinking is idempotent: the same
+    # database links to the same business every time instead of forking a new
+    # one on each press.
+    business_id = "openedge-" + re.sub(r"[^a-z0-9]+", "-", business_name.lower()).strip("-")
+
+    # Checked before the rows are shaped, and on purpose: an empty table is the
+    # common mistake (the owner built the database and skipped the seeder), so it
+    # gets the fix by name rather than a validation error about list lengths,
+    # which is what StockBatchIn would say instead.
+    rows = read.get("lines") or []
+    if not rows:
+        raise HTTPException(
+            400,
+            f"'{name}' has the coffee_item table but no rows in it. Run "
+            "04-seed-coffee.p against it, then link again.",
+        )
+
+    try:
+        batch = api_v1.StockBatchIn(
+            business=api_v1.BusinessIdentity(businessId=business_id, businessName=business_name),
+            lines=[
+                api_v1.StockLineIn(
+                    itemName=line["itemName"],
+                    category=line.get("category") or "Uncategorised",
+                    basePrice=float(line["basePrice"]),
+                    totalCapacity=int(line["totalCapacity"]),
+                    unitsSold=int(line["unitsSold"]),
+                    shelfHoursUntilClosed=float(line["shelfHoursUntilClosed"]),
+                )
+                for line in rows
+            ],
+        )
+    except (ValidationError, KeyError, TypeError, ValueError) as failure:
+        raise HTTPException(
+            422,
+            "The rows the database returned do not fit the stock shape this product "
+            f"reasons about. It said: {failure}",
+        ) from failure
+
+    # The two halves, in one call. First the honest mapped copy, through the
+    # push path's own upsert so the two routes cannot diverge into two slightly
+    # different shelves. ``api_v1._db_for_push`` rather than a bare ``connect()``
+    # because it also ensures the V1Stock table exists, so linking into a fresh
+    # database works rather than failing with "no such table".
+    resolved = api_v1.resolved_lines(batch)
+    db = api_v1._db_for_push()
+    try:
+        stored = api_v1.upsert_business_stock(db, batch, resolved)
+
+        # Second, the bridge the mapped copy alone does not do: write the same
+        # stock into the workspace the copilot, the planner and the retrieval
+        # corpus read, and make it the active business. Without this step,
+        # "I linked my database" and "the copilot can answer about it" would be
+        # two different states, which is the exact lie this endpoint exists to
+        # avoid. The floor is derived from the lines' own floors, so a database
+        # that carries no floor prices reads as honestly assumed, not invented.
+        profile = connect_business(db, business_name, resolved)
+        items = [
+            inventory_item(row)
+            for row in db.execute("SELECT * FROM Inventory ORDER BY ExpirationTimestamp")
+        ]
+        retrain_active(profile, items)
+    except ValueError as failure:
+        raise HTTPException(400, str(failure)) from failure
+    finally:
+        db.close()
+
+    return {
+        "business": stored.business,
+        "accepted": stored.accepted,
+        "itemIds": stored.itemIds,
+        "storedAsOf": stored.storedAsOf,
+        "source": "openedge",
+        "database": name,
+        "program": "06-enquiry-json.p",
+        "readOnly": True,
+        "unitsLeft": read.get("unitsLeft"),
+        "activeBusiness": {
+            "name": business_name,
+            "floorPct": profile["marginFloorPct"],
+            "floorSource": profile["floorSource"],
+            "lines": len(items),
+            "note": (
+                "The copilot, the planner and the retrieval corpus now answer about this "
+                "business, off the rows just read out of OpenEdge."
+            ),
+        },
+        "note": (
+            "Read from the OpenEdge database by a FOR EACH with NO-LOCK, kept as a mapped "
+            "copy, and made the business the copilot answers about. The business keeps its "
+            "source of truth; relinking replaces the copy and writes nothing back."
+        ),
     }
 
 

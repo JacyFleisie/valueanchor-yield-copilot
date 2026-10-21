@@ -1,0 +1,190 @@
+# -----------------------------------------------------------------------------
+# The OpenAPI document you hand to the OpenEdge MCP Server (`mcpgen`).
+#
+# WHY THIS FILE EXISTS
+#
+# The OpenEdge MCP Server does not decide which tools exist: it generates one MCP
+# tool per operation in the OpenAPI specification you give it. So the tool surface
+# on the OpenEdge side is a property of this document, not of the server - which
+# means "the OpenEdge side is unconfigured" in this project is one file away from
+# being answered, and this is that file's starting shape.
+#
+# HOW TO USE IT
+#
+#   1. Point `servers.url` below at YOUR service - the one that reads your
+#      OpenEdge database. This template talks to nothing; the address is a
+#      placeholder on purpose.
+#   2. Adjust the paths, operationIds and parameters to what your service actually
+#      offers. Each GET becomes one tool an agent can call.
+#   3. Generate and start the server, from the OpenEdge MCP Server distribution:
+#
+#        ./mcpgen up --spec ./enquiry-api.yml
+#
+#      It listens on port 8500 by default, streamable HTTP at /http and SSE at
+#      /sse.
+#   4. Tell this project where it is (backend/.env):
+#
+#        OPENEDGE_MCP_URL=http://localhost:8500/http
+#        OPENEDGE_MCP_TOKEN=            # only if you switched auth on
+#
+#      Then open the **OpenEdge** tab and press **Check now**: the probe asks the
+#      server for its tool list and reports what it advertises, or the status code
+#      it refused with. Until step 4 the tab says *not called* and names the
+#      variable - which is the honest state, not a broken one.
+#
+# READ-ONLY BY DEFAULT, AND DELIBERATELY SO
+#
+# `mcpgen` includes GET operations by default and excludes POST, PUT and DELETE
+# unless they are explicitly enabled. That default is exactly right for this
+# product's outbound direction: reading a business's records to reason about them
+# is the whole job, and nothing here writes to OpenEdge. If you later want a
+# writing tool, add it as its own documented operation with its own choice -
+# do not turn writes on wholesale to save a line.
+#
+# AUTHENTICATION
+#
+# Left out, because it is optional: a read-only configuration runs with it
+# disabled, which is how the demo runs. A secured deployment uses a service-account
+# JWT (the generated server sends it as `X-OEMCP-SERVICEACCOUNT`) or OAuth; that is
+# configured on the server, not in this document. The matching project variable is
+# `OPENEDGE_MCP_TOKEN`, which is used in exactly one header on one probe, never
+# returned, never logged, and never written to the decision log.
+#
+# WHAT THIS PROJECT DOES WITH THE TOOLS IT FINDS
+#
+# Nothing automatic. An agent on the OpenEdge side calls these tools, and this
+# project's own tools are what turn records into a decision - the direction is
+# built and tested at POST /mcp. Reading your records *in* is plumbing that reports
+# itself as unconfigured until the four steps above are done, so nothing here
+# claims to be wired into a database it has never seen.
+# -----------------------------------------------------------------------------
+
+openapi: 3.0.3
+
+info:
+  title: ValueAnchor enquiry surface (template)
+  version: 0.1.0
+  description: >
+    A starting shape for the read-only operations an OpenEdge MCP Server should
+    expose to an agent. Replace the placeholder address and the operations with
+    your own. Keep it read-only unless a write is a decision you have made on
+    purpose.
+
+servers:
+  # Change this to your service. It is where the generated MCP tools make their
+  # HTTP calls, so it must be reachable from wherever `mcpgen` is running.
+  - url: http://localhost:8811
+    description: Your enquiry service, reading your OpenEdge database. A placeholder.
+
+paths:
+  /stock:
+    get:
+      operationId: listStock
+      summary: Every line currently on the shelf
+      description: >
+        The lines a business is holding right now, with the fields an owner would
+        recognise: what it is, what it sells for, how many are left, and how long
+        is left before it lapses. This is the operation an agent needs first - it
+        is the one that answers "what have we got".
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: How many lines to return. Omit for the service's own default.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: The lines on the shelf.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lines:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        itemId: { type: integer }
+                        name: { type: string }
+                        category: { type: string }
+                        price: { type: number }
+                        unitsLeft: { type: integer }
+                        hoursRemaining: { type: number }
+        "404":
+          description: No stock loaded for this business yet.
+
+  /stock/{itemId}:
+    get:
+      operationId: getStockLine
+      summary: One line, by id
+      description: >
+        A single line with everything the service holds about it. Used when an
+        agent already knows which line it is asking about, so it does not fetch a
+        whole shelf to find out one thing.
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          description: The identifier of the line. Must be a line that exists.
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The line.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  itemId: { type: integer }
+                  name: { type: string }
+                  category: { type: string }
+                  price: { type: number }
+                  unitsLeft: { type: integer }
+                  hoursRemaining: { type: number }
+        "404":
+          description: That line is not in the live stock.
+
+  /sell-through:
+    get:
+      operationId: getSellThrough
+      summary: What has been selling, and over what window
+      description: >
+        Sell-through for one business. Note the requirement this project learned the
+        hard way: a sell-through figure is only honest if it says where it came from
+        (counted sales, or derived from stock movement), so the response carries its
+        own `source` rather than leaving the reader to assume.
+      parameters:
+        - name: businessId
+          in: query
+          required: true
+          description: Which business the figure is for.
+          schema:
+            type: string
+        - name: windowDays
+          in: query
+          required: false
+          description: How many days back to measure.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+      responses:
+        "200":
+          description: Sell-through, with its source stated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source:
+                    type: string
+                    description: Where the number came from - counted sales, or derived from stock movement.
+                  windowDays: { type: integer }
+                  units: { type: integer }
+        "404":
+          description: Unknown business.

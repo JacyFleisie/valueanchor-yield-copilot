@@ -284,13 +284,14 @@ export default function ModelsTab() {
               )}
 
               <div className="model-actions">
-                <button className="ghost" disabled={busy === `probe-${entry.ModelRowID}`} onClick={() => probe(entry)}>
+                <button className="ghost" title="Sends one short test prompt to this model and shows whether it answered, what it replied, and how long you are rate-limited for before trying again." disabled={busy === `probe-${entry.ModelRowID}`} onClick={() => probe(entry)}>
                   {busy === `probe-${entry.ModelRowID}` ? <Loader2 size={12} className="spin" /> : <Plug size={12} />} Test it
                 </button>
-                <button className="ghost" disabled={busy === 'order'} onClick={() => move(entry, -1)} aria-label={`Move ${entry.Label} up`}><ChevronUp size={12} /></button>
-                <button className="ghost" disabled={busy === 'order'} onClick={() => move(entry, 1)} aria-label={`Move ${entry.Label} down`}><ChevronDown size={12} /></button>
+                <button className="ghost" title={`Moves ${entry.Label} earlier in the order the assistant tries them - the top one is asked first.`} disabled={busy === 'order'} onClick={() => move(entry, -1)} aria-label={`Move ${entry.Label} up`}><ChevronUp size={12} /></button>
+                <button className="ghost" title={`Moves ${entry.Label} later in the order the assistant tries them.`} disabled={busy === 'order'} onClick={() => move(entry, 1)} aria-label={`Move ${entry.Label} down`}><ChevronDown size={12} /></button>
                 <button
                   className={`ghost${entry.enabled ? '' : ' on'}`}
+                  title="Keeps this model in the order the assistant tries, or takes it out of the rotation."
                   disabled={busy === `toggle-${entry.ModelRowID}`}
                   onClick={() => call('/api/models/update', 'POST', { rowId: entry.ModelRowID, enabled: !entry.enabled }, `toggle-${entry.ModelRowID}`)}
                 >
@@ -298,6 +299,7 @@ export default function ModelsTab() {
                 </button>
                 <button
                   className="ghost danger"
+                  title="Removes this model from the rotation. It is a list on this machine, not an account."
                   disabled={busy === `del-${entry.ModelRowID}`}
                   onClick={() => call(`/api/models/${entry.ModelRowID}`, 'DELETE', undefined, `del-${entry.ModelRowID}`)}
                 >

@@ -8,7 +8,7 @@ Three things are being protected here, in the order they matter:
    repair are asserted on utterances, and the holdout score is checked to be a
    real measurement rather than a training score in disguise.
 3. **The API contract the dashboard depends on.** Status codes, the shape of the
-   copilot payload, and sector switching.
+   copilot payload, and the engine following whatever stock is active.
 """
 
 from __future__ import annotations
@@ -341,20 +341,68 @@ def test_decisions_are_validated_and_logged(client):
     assert any(entry["strategyId"] == logged.json()["strategyId"] for entry in decisions)
 
 
-def test_switching_sector_retrains_for_the_new_vocabulary(client):
+def test_the_engine_is_rebuilt_for_the_inventory_it_is_now_answering_about(client):
+    """Choosing a sector is gone; rebuilding the engine for new stock is not.
+
+    Sector switching was a way of picking a workspace, and the product now has
+    exactly one: the business whose database was linked. What the old test was
+    really protecting survives that change - the intent engine follows the
+    inventory instead of staying warm on the old catalogue, so a bakery shelf is
+    answered in bakery vocabulary at bakery prices.
+    """
+    bakery = [
+        ("Cinnamon bun", "Pastry", 34.0, 80, 22, 2.0),
+        ("Chocolate eclair", "Cakes", 46.0, 48, 15, 3.0),
+        ("Sourdough loaf", "Breads", 58.0, 60, 54, 4.0),
+    ]
+    lines = [
+        {
+            "itemName": name,
+            "category": category,
+            "basePrice": price,
+            "totalCapacity": capacity,
+            "unitsSold": sold,
+            "shelfHoursUntilClosed": hours,
+        }
+        for name, category, price, capacity, sold, hours in bakery
+    ]
+
+    db = app_module.connect()
     try:
-        switched = client.post("/api/profile/sector", json={"sector": "bakery"})
-        assert switched.status_code == 200
-        assert switched.json()["businessName"] == "Yeast & Crumb"
-        response = client.post("/api/copilot", json={"question": "what should i bundle with the cinnamon bun", "sessionId": "bakery"})
+        profile = app_module.connect_business(db, "Yeast & Crumb", lines)
+        items = [
+            app_module.inventory_item(row)
+            for row in db.execute("SELECT * FROM Inventory ORDER BY ExpirationTimestamp")
+        ]
+        app_module.retrain_active(profile, items)
+    finally:
+        db.close()
+
+    try:
+        response = client.post(
+            "/api/copilot",
+            json={"question": "what should i bundle with the cinnamon bun", "sessionId": "bakery"},
+        )
         assert response.status_code == 200
         body = response.json()
         assert body["nlu"]["intent"] == "bundle_recommend"
         assert any(entity.get("value") == "Cinnamon bun" for entity in body["nlu"]["entities"])
         assert "R34" in body["answer"], "the bakery line must be priced with the bakery catalogue"
-        assert client.get("/api/nlu/model").json()["profile"]["sector"] == "bakery"
+        assert client.get("/api/nlu/model").json()["profile"]["sector"] == "connected"
     finally:
-        client.post("/api/profile/sector", json={"sector": "coffee"})
+        # Put the shared workspace back on the preset, so this test leaves the
+        # session the way it found it rather than quietly answering the next
+        # test's questions about a business that was only here for this test.
+        restore = app_module.connect()
+        try:
+            restore.execute(
+                "UPDATE Profile SET Connected = 0, SectorSlug = 'coffee' WHERE ProfileID = 1"
+            )
+            app_module.seed_sector(restore, "coffee")
+            restore.commit()
+        finally:
+            restore.close()
+
     assert client.get("/api/profile").json()["sector"] == "coffee"
     # The engine must be rebuilt for the restored preset, not left on bakery.
     restored = client.post("/api/copilot", json={"question": "what needs attention first?", "sessionId": "restored"})

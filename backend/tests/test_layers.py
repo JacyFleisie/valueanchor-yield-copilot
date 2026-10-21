@@ -400,3 +400,26 @@ def test_the_pair_endpoint_refuses_an_empty_request():
 
     with TestClient(app_module.app) as client:
         assert client.post("/api/profit/pair", json={"itemIds": []}).status_code == 400
+
+
+def test_the_pair_endpoint_refuses_a_line_that_is_not_on_the_shelf():
+    """One unknown line fails the whole pairing, and the refusal names it.
+
+    The tempting behaviour is to cost the lines that exist and leave the rest
+    out. That would answer a question about two lines with the cost of one, in
+    a confident voice, and the caller would have no way to tell - which is the
+    failure the pairing tool exists to prevent.
+    """
+    from fastapi.testclient import TestClient
+
+    with TestClient(app_module.app) as client:
+        live = [item["itemId"] for item in client.get("/api/inventory").json()["items"][:2]]
+        assert len(live) == 2, "this test needs two live lines to pair"
+        refused = client.post("/api/profit/pair", json={"itemIds": [live[0], 999_999]})
+        assert refused.status_code == 404
+        assert "999999" in refused.json()["detail"], "the refusal must name the line that is gone"
+        # The same call without the unknown line is still answered, so the refusal
+        # is about the missing line and not about pairing being broken.
+        answered = client.post("/api/profit/pair", json={"itemIds": live})
+        assert answered.status_code == 200
+        assert [line["itemId"] for line in answered.json()["lines"]] == live

@@ -24,6 +24,21 @@ next-env.d.ts
 logs/
 *.log
 
+# OpenEdge runtime artifacts. The ABL procedures, the DDL and the OpenAPI spec
+# in `openedge/` are source and are committed; everything the database engine
+# writes while running them is not. The sample databases are rebuilt from those
+# procedures, so the binaries only ever add megabytes and merge noise.
+openedge/*.b1
+openedge/*.d1
+openedge/*.d2
+openedge/*.lg
+openedge/*.st
+openedge/*.lic
+openedge/*.out
+openedge/*.pl
+openedge/SQLExplorer.properties
+openedge/put-test.txt
+
 # The trained NLU model cache. Rebuilt automatically when the corpus or the
 # owner's confirmed questions change, so it is not worth versioning.
 backend/.model_cache/
