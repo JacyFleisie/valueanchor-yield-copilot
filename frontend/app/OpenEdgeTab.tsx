@@ -182,7 +182,7 @@ export default function OpenEdgeTab({ api }:{ api:string }) {
   return <div className="tab-panel">
     <p className="eyebrow accent">OPENEDGE + MCP</p>
     <h2>The engine is the tool. The model only reads it.</h2>
-    <p>This runs in two directions and they are not equally available, so they are shown separately. Inward, ValueAnchor is an MCP server: an agent on the OpenEdge side calls these tools and gets numbers the yield engine computed from the live rows, each answer carrying the records it came from. Outward, it can read a business&rsquo;s own records from an OpenEdge MCP Server and facts from a Progress Agentic RAG Context Box - software an owner installs and points at their own database, so it reports unconfigured rather than pretending.</p>
+    <p>ValueAnchor is an MCP server other tools can call today. Reading a business&rsquo;s own OpenEdge records is the other direction, and it needs software you install first.</p>
 
     {problem && <p className="oe-problem">{problem}</p>}
 
@@ -206,10 +206,12 @@ export default function OpenEdgeTab({ api }:{ api:string }) {
       <p className="oe-note">Point a host at that config and it gets the yield engine as tools. Every figure it reads was computed here, which is the point: a model that is asked what to bundle calls a tool instead of multiplying a price by a percentage.</p>
     </section>
 
-    <div className="oe-tools">
+    <details className="fold">
+      <summary>What an agent can call{tools.length ? ` (${tools.length})` : ''}</summary>
+      <div className="fold-body">
       <div className="oe-tools-head">
-        <p className="eyebrow">WHAT AN AGENT CAN CALL</p>
-        <span className="oe-live">read live from {api}/mcp · {tools.length ? `${tools.length} tools` : 'no answer'}</span>
+        <p className="eyebrow">READ LIVE FROM {api}/mcp</p>
+        <span className="oe-live">{tools.length ? `${tools.length} tools answered` : 'no answer'}</span>
       </div>
       {tools.length ? tools.map(tool => <article className="oe-tool" key={tool.name}>
         <div className="oe-tool-head">
@@ -222,7 +224,8 @@ export default function OpenEdgeTab({ api }:{ api:string }) {
         <p>{tool.description}</p>
         <small>takes {(tool.inputSchema?.required ?? []).join(', ') || 'no arguments'}</small>
       </article>) : <p className="modal-note">The MCP endpoint did not answer, so no tool list is shown - a remembered list would be a claim about a surface this machine cannot currently reach.</p>}
-    </div>
+      </div>
+    </details>
 
     {/* The local read-only bridge: the path that works on this machine today.
         It is deliberately separate from the outbound direction below, which needs
@@ -279,7 +282,9 @@ export default function OpenEdgeTab({ api }:{ api:string }) {
       </p>
     </div>
 
-    <div className="oe-outbound">
+    <details className="fold">
+      <summary>Outbound connections (optional)</summary>
+      <div className="fold-body">
       <div className="oe-tools-head">
         <p className="eyebrow">THE OUTBOUND DIRECTION</p>
         <button className="guardrail-ghost" title="Asks each configured address for its tool list. Opt-in, so opening this tab never waits on somebody else's server." onClick={() => loadStatus(true)} disabled={checking}>
@@ -312,8 +317,9 @@ export default function OpenEdgeTab({ api }:{ api:string }) {
         <ul className="oe-notes">{entry.notes.map(note => <li key={note}><ShieldCheck size={12}/><span>{note}</span></li>)}</ul>
       </section>)}
       {!status && !problem && <p className="modal-note">Reading the status of both directions…</p>}
-    </div>
+      </div>
+    </details>
 
-    <p className="modal-note">What this screen will not do is claim a connection it does not have. A direction with no address says not called and names the variable that would change that; a direction that was asked and refused shows what it said, including the status code. The probe is opt-in, because a status page should not quietly wait on somebody else&rsquo;s server every time it is opened.</p>
+    <p className="modal-note">Nothing here claims a connection it does not have: an address that is not set says so, and a check that failed shows what it said. A probe is only sent when you press Check now.</p>
   </div>
 }

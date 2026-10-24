@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, BarChart3, Bell, ChevronRight, CircleHelp, Clock3, Filter, Menu, PackageCheck, Plug, Search, Settings2, ShieldCheck, Sparkles, X, Zap } from 'lucide-react'
+import { ArrowUpRight, BarChart3, Clock3, Filter, Menu, PackageCheck, Plug, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react'
 import CopilotChat from './CopilotChat'
 import OpenEdgeTab from './OpenEdgeTab'
 import SettingsTab from './SettingsTab'
@@ -57,9 +57,10 @@ type NluModel = {
 const TABS: Tab[] = ['Overview', 'Inventory', 'Copilot AI', 'OpenEdge', 'Settings']
 const TAB_ICON: Record<Tab, string> = { Overview:'bars', Inventory:'package', 'Copilot AI':'sparkles', OpenEdge:'plug', Settings:'settings' }
 
-// Clarifying chips do not guess at a rephrasing: they send the original question
-// back with the chosen intent, which the engine then takes as confirmed.
-const API = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000')
+// The packaged desktop app serves this interface and the API from one origin, so
+// a relative base works on whatever port it started on. `next dev` runs on :3000
+// with the engine on :8000, which is the one split-origin case.
+const API = process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' && window.location.port !== '3000' ? '' : 'http://localhost:8000')
 const glyph = (category:string) => /pastry|cake|bake|bread/i.test(category) ? '◒' : /room|suite/i.test(category) ? '⌂' : /produce|dairy|fresh/i.test(category) ? '◍' : /kitchen|deli|savour|coach|transfer/i.test(category) ? '▤' : '↗'
 
 export default function Home() {
@@ -99,7 +100,6 @@ export default function Home() {
   const money = (value:number) => `${profile?.currencySymbol ?? 'R'}${value.toLocaleString('en-ZA', { maximumFractionDigits: 0 })}`
   const atRisk = items.filter(item => item.riskStatus !== 'healthy')
   const visible = onlyAtRisk ? atRisk : items
-  const categories = new Set(items.map(item => item.category)).size
   const unitsAtRisk = atRisk.reduce((total, item) => total + item.unitsAvailable, 0)
 
   const loadInventory = async () => {
@@ -132,6 +132,17 @@ export default function Home() {
 
   useEffect(() => { loadInventory() }, [])
   useEffect(() => { if (activeTab === 'Copilot AI') loadHistory() }, [activeTab])
+  // The analysis is a dialog, so Escape closes it like any other dialog - a
+  // model that can only be dismissed by aiming at a small X is a trap on a
+  // keyboard.
+  useEffect(() => {
+    if (!selected) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setSelected(null); setAnalysis(null) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selected])
   useEffect(() => { if (activeTab === 'Copilot AI') { loadModel(); loadLearning(); loadKnowledge() } }, [activeTab])
 
   const analyze = async (item:Inventory) => {
@@ -169,47 +180,57 @@ export default function Home() {
       <button className="rail-close" aria-label="Close navigation" onClick={() => setMenuOpen(false)}><X size={18}/></button>
       <div className="brand"><div className="brand-mark">V</div><span>Value<br/><b>Anchor</b></span></div>
       <nav>{TABS.map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} aria-current={activeTab === tab} onClick={() => { setActiveTab(tab); setMenuOpen(false) }}>{tabIcon(tab)} {tab}</button>)}</nav>
-      <div className="rail-bottom"><a><Settings2 size={18}/>Settings</a><a><CircleHelp size={18}/>Support</a><div className="profile"><div className="avatar">AM</div><div><b>Alex Morgan</b><small>Yield manager</small></div></div></div>
+      {/* Settings is already a nav tab above; there is no support destination to link to, so neither is repeated here as a dead link. */}
+      <div className="rail-bottom"><div className="profile"><div className="avatar">AM</div><div><b>Alex Morgan</b><small>Yield manager</small></div></div></div>
     </aside>
     <section className="content">
       <header>
         <button className="mobile-menu" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><Menu size={20}/></button>
         <div><p className="eyebrow">{clock?.day ?? '\u00a0'}</p><h1>{clock?.greeting ?? 'Welcome back'}, Alex <span>✦</span></h1></div>
-        <div className="header-actions"><button className="icon-button" aria-label="Search"><Search size={18}/></button><button className="icon-button" aria-label="Notifications"><Bell size={18}/><i/></button><div className="avatar">AM</div></div>
+        {/* Search, notifications and the avatar here were decorative: nothing
+            backed them. The greeting and the workspace itself are the header. */}
       </header>
 
-      {activeTab === 'Overview' && <>
-        <div className="hero">
+      {activeTab === 'Overview' && <>        <div className="hero">
           <div>
             <p className="eyebrow accent">YIELD CONTROL CENTER</p>
             <h2>Protect the price floor.<br/><em>{profile?.heroLine ?? 'Capture the next sale.'}</em></h2>
-            <p className="hero-copy">{profile?.connected ? `Running on the stock read from ${profile.businessName},` : `Runs on the ${(profile?.name ?? 'coffee shop').toLowerCase()} preset,`} and on any business<br className="desktop"/> that sells stock or capacity before it lapses. Ask the copilot a question and it answers from the live numbers, with its working shown.</p>
+            <p className="hero-copy">Every answer is priced against your live {noun} and your own floor. Nothing below it is ever suggested.</p>
           </div>
-          <div className="hero-orb">
-            <div className="orb-ring ring-1"/><div className="orb-ring ring-2"/>
-            <div className="orb-core"><Zap size={27}/><small>LIVE</small></div>
-            <span className="orb-label label-a">MARGIN FLOOR<br/><b>≥{profile?.marginFloorPct ?? 60}%</b></span>
-            <span className="orb-label label-b">MARKDOWNS<br/><b>NEVER</b></span>
+          <div className="hero-floor" title={`Every recommendation is priced against this floor: ${profile?.marginFloorPct ?? 60}% of shelf price. Change it on the Settings tab.`}>
+            <small>MARGIN FLOOR</small>
+            <b>≥{profile?.marginFloorPct ?? 60}<em>%</em></b>
+            <span>No markdowns</span>
           </div>
         </div>
         <CopilotChat api={API} business={profile?.businessName ?? 'your business'} sample={profile?.sampleQuestion ?? 'Which batch needs attention first?'}/>
-        <div className="metrics">
-          <Metric icon={<PackageCheck/>} label={`Active ${noun}`} value={String(items.length).padStart(2,'0')} detail={`across ${categories} ${categories === 1 ? 'category' : 'categories'}`} tone="blue" hint={`Counted from the live ${noun} this workspace holds - the same rows the copilot reads.`}/>
-          <Metric icon={<Zap/>} label="At-risk lines" value={String(atRisk.length).padStart(2,'0')} detail="need attention today" tone="orange" hint="The engine's own call: time running out and little of the line sold. Not a forecast - a ranking of what is on the shelf now."/>
-          <Metric icon={<ArrowUpRight/>} label="Units at risk" value={String(unitsAtRisk)} detail={`unsold in ${noun}`} tone="purple" hint="Unsold units on those at-risk lines, counted from the shelf. Nothing is estimated."/>
-          <Metric icon={<ShieldCheck/>} label="Margin floor" value={`${profile?.marginFloorPct ?? 60}%`} detail="no markdowns below it" tone="green" hint={`What every answer prices against: ${profile?.marginFloorPct ?? 60}% of shelf price. Change it on the Settings tab.`}/>
+        <div className="facts">
+          <div className="fact" title={`Counted from the live ${noun} this workspace holds - the same rows the copilot reads.`}><small>Active {noun}</small><b>{String(items.length).padStart(2,'0')}</b></div>
+          <div className="fact" title="The engine's own call: time running out and little of the line sold. Not a forecast - a ranking of what is on the shelf now."><small>At risk</small><b>{String(atRisk.length).padStart(2,'0')}</b></div>
+          <div className="fact" title="Unsold units on those at-risk lines, counted from the shelf. Nothing is estimated."><small>Units at risk</small><b>{unitsAtRisk}</b></div>
         </div>
       </>}
 
       {activeTab === 'OpenEdge' && <OpenEdgeTab api={API} />}
 
-      {activeTab === 'Settings' && <SettingsTab api={API} />}
+      {activeTab === 'Settings' && <SettingsTab api={API} onSaved={loadInventory} />}
 
       {activeTab === 'Copilot AI' && <>
-        <div className="tab-panel">
-          <p className="eyebrow accent">HOW IT THINKS</p>
-          <h2>{model ? `${model.intents.length} ways of understanding a question, and a model that learns yours` : 'Reading the model card…'}</h2>
-          <p>A question is read by a small model trained on this machine, then answered from records retrieved out of your live data, and only then put into plain words. The reading is a hybrid of word and character TF-IDF into a logistic regression, with spelling repair and catalogue matching either side of it. Nothing is downloaded. The confidence number is how sure that reading was; the how-it-worked-it-out panel on any answer is what it read from your stock to answer.</p>
+        <div className="chat-wrap">
+          <CopilotChat
+            api={API}
+            business={profile?.businessName ?? 'your business'}
+            sample={profile?.sampleQuestion ?? 'Which batch needs attention first?'}
+            expanded
+            queued={queued}
+            onLearning={info => setLearning(current => current ? { ...current, learnedExamples: info.learnedExamples, turns: info.turns } : current)}
+          />
+        </div>
+
+        <details className="fold">
+          <summary>How a question becomes an answer</summary>
+          <div className="fold-body">
+          <p className="fold-lede">{model ? `${model.intents.length} ways of understanding a question. The numbers are computed here; the words are the only part a model may touch.` : 'Reading the model card…'}</p>
 
           {model && <>
             <div className="model-grid">
@@ -266,12 +287,13 @@ export default function Home() {
             </div>
             <p className="modal-note">Trained {model.training.trainedAt} against the live {model.profile.inventoryNoun} of {model.profile.businessName} ({model.profile.sector}, {model.profile.marginFloorPct}% floor). The holdout score is measured on phrasings the classifier has never seen, because the split happens before the slot expansion - so it is an honest estimate, not a number that flatters itself.</p>
           </>}
-        </div>
+          </div>
+        </details>
 
-        <div className="tab-panel learning-panel">
-          <p className="eyebrow accent">WHAT IT HAS LEARNED HERE</p>
-          <h2>It gets better at your business, not just at English</h2>
-          <p>{learning?.howItLearns ?? 'Reading what has been learned…'}</p>
+        <details className="fold">
+          <summary>What it has learned on this machine</summary>
+          <div className="fold-body">
+          <p className="fold-lede">{learning?.howItLearns ?? 'Reading what has been learned…'}</p>
           {learning && <>
             <div className="model-grid">
               <div className="model-stat"><small>QUESTIONS ANSWERED</small><b>{learning.turns}</b><span>every one written down with its answer, its figures and where they came from</span></div>
@@ -303,26 +325,15 @@ export default function Home() {
 
             <p className="modal-note">{learning.learningRule}</p>
           </>}
-        </div>
+          </div>
+        </details>
 
-        <div className="chat-wrap">
-          <CopilotChat
-            api={API}
-            business={profile?.businessName ?? 'your business'}
-            sample={profile?.sampleQuestion ?? 'Which batch needs attention first?'}
-            expanded
-            queued={queued}
-            onLearning={info => setLearning(current => current ? { ...current, learnedExamples: info.learnedExamples, turns: info.turns } : current)}
-          />
-        </div>
-      {activeTab === 'Copilot AI' && <div className="tab-panel">
-        {/* The decision log sits where decisions are made: the copilot turns a
-            question into a recommendation, and this is the record of what was
-            then approved or declined. */}
-        <h2>Decisions that protect margin</h2>
+      <div className="tab-panel">
+        <p className="eyebrow accent">DECISIONS</p>
+        <h2>What you approved</h2>
         {history.length === 0
           ? <>
-              <p>No decisions logged yet. Approve or decline a yield action and it is recorded here automatically, labelled with the item and sector it belonged to.</p>
+              <p>Nothing logged yet. Approving or declining a yield action records it here.</p>
               <button className="primary-action" onClick={() => setActiveTab('Inventory')}>Review live {noun} <ArrowUpRight size={15}/></button>
             </>
           : <div className="history-list">{history.map(entry => <div className="history-row" key={entry.strategyId}>
@@ -332,7 +343,7 @@ export default function Home() {
               <div className="history-meta"><small>MARGIN RETAINED</small><b>{money(entry.marginRetained)}</b></div>
               <div className="history-meta"><small>LOGGED</small><b>{new Date(entry.createdTimestamp).toLocaleString('en-ZA', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</b></div>
             </div>)}</div>}
-      </div>}
+      </div>
 
       </>}
 
@@ -340,16 +351,15 @@ export default function Home() {
         <div className="section-heading">
           <div>
             <p className="eyebrow">{activeTab === 'Inventory' ? `${noun.toUpperCase()} CONTROL` : `LIVE ${noun.toUpperCase()}`}</p>
-            <h3>{activeTab === 'Inventory' ? 'All capacity, one clear action' : 'Where attention creates value'}</h3>
+            <h3>{activeTab === 'Inventory' ? 'Every line, one action' : 'Lines that need attention'}</h3>
           </div>
           <div className="tools">
-            <button className="filter" aria-pressed={onlyAtRisk} onClick={() => setOnlyAtRisk(!onlyAtRisk)}><Filter size={15}/>{onlyAtRisk ? 'Showing at risk' : 'Filter'} <span>{atRisk.length}</span></button>
-            {onlyAtRisk && <button className="view-all" onClick={() => setOnlyAtRisk(false)}>Show all <ChevronRight size={16}/></button>}
+            <button className="filter" aria-pressed={onlyAtRisk} title={onlyAtRisk ? 'Showing only the lines that need attention. Press to see every line.' : 'Show only the lines that need attention today.'} onClick={() => setOnlyAtRisk(!onlyAtRisk)}><Filter size={15}/> At risk <span>{atRisk.length}</span></button>
           </div>
         </div>
         {notice && <div className="notice">{notice}</div>}
         <div className="table-card">
-          <div className="table-head"><span>{noun.toUpperCase()}</span><span>PRICE FLOOR</span><span>TIME LEFT</span><span>VELOCITY</span><span>STATUS</span><span/></div>
+          <div className="table-head"><span>{noun.toUpperCase()}</span><span>PRICE FLOOR</span><span>TIME LEFT</span><span>SOLD</span><span>STATUS</span><span/></div>
           {visible.length === 0
             ? !loaded
               ? <div className="table-empty">Reading live {noun}…</div>
@@ -363,13 +373,16 @@ export default function Home() {
                     </div>
                   </div>
                 : <div className="table-empty">Nothing is at risk. All {items.length} lines are tracking above the floor.</div>
-            : visible.map(item => <div className="table-row" key={item.itemId}>
+            : visible.map(item => <div className="table-row clickable" key={item.itemId} role="button" tabIndex={0} aria-label={`Review ${item.itemName}`}
+                title="Costs this line three ways - let it lapse, or add value instead of cutting the price - and shows what each one keeps against its floor."
+                onClick={() => analyze(item)}
+                onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); analyze(item) } }}>
                 <div className="item-name" title={`${item.itemName} - ${item.category}, line ${item.itemId}. The subject of any question you ask about it.`}><div className={`item-icon ${item.category.toLowerCase().replace(/[^a-z]/g,'')}`}>{glyph(item.category)}</div><div><b>{item.itemName}</b><small>{item.category} · ID-{item.itemId}</small></div></div>
                 <strong title={`Shelf price ${money(item.basePrice)} - what a customer pays today. Your floor on this line is ${profile?.marginFloorPct ?? 60}% of that: ${money(Math.round(item.basePrice * (profile?.marginFloorPct ?? 60) / 100))}. Nothing is recommended below it.`}>{money(item.basePrice)}</strong>
                 <div className="time" title="How long is left before this line lapses, counted from its expiry - not an estimate."><Clock3 size={15}/><b>{item.hoursRemaining < 24 ? `${Math.max(1, Math.round(item.hoursRemaining))}h` : `${Math.round(item.hoursRemaining / 24)}d`}</b><small>remaining</small></div>
                 <div className="velocity" title={`Share of this line already sold: ${item.unitsSold} of ${item.totalCapacity}. With the hours left, this is what sets the urgency.`}><div className="bar"><i style={{ width:`${Math.min(100, item.velocityIndex * 100)}%` }}/></div><b>{Math.round(item.velocityIndex * 100)}%</b></div>
                 <div><span className={`status ${item.riskStatus}`} title={item.riskStatus === 'critical' ? 'Critical: little sold and little time left, so this line is first in line for attention.' : item.riskStatus === 'watch' ? 'Watch: time is passing faster than it is selling. Worth a look before close.' : 'Healthy: selling at a pace that should clear before it lapses.'}>{item.riskStatus === 'healthy' ? 'Healthy' : item.riskStatus === 'critical' ? 'Critical' : 'Watch'}</span></div>
-                <button className="action-btn" title="Costs this line three ways - let it lapse, or add value instead of cutting the price - and shows what each one keeps against its floor." onClick={() => analyze(item)}>Generate yield action <ArrowUpRight size={15}/></button>
+                <span className="row-action">Review <ArrowUpRight size={15}/></span>
               </div>)}
         </div>
       </>}
@@ -411,7 +424,15 @@ export default function Home() {
               {analysis.profit.breakeven && <p className="breakeven"><b>Where the bundle wins:</b> {analysis.profit.breakeven.explanation}</p>}
               <p className="meta-note">{analysis.profit.notModelled}</p>
             </div>}
-            <div className="modal-actions"><button className="decline" onClick={() => decide('Declined')}>Decline</button><button className="approve" onClick={() => decide('Approved')}><Sparkles size={16}/>Approve and activate</button></div>
+            <div className="modal-actions">
+              {/* The next question is usually "why, or what else?" - so the
+                  dialog hands it to the one conversation instead of making the
+                  owner retype the line's name. */}
+              <button className="ask-line" onClick={() => { const text = `What should I bundle with the ${analysis.item.itemName}?`; setSelected(null); setAnalysis(null); setActiveTab('Copilot AI'); queue(text) }}>
+                <Sparkles size={14}/> Ask about this line
+              </button>
+              <button className="decline" onClick={() => decide('Declined')}>Decline</button><button className="approve" onClick={() => decide('Approved')}><Sparkles size={16}/>Approve and activate</button>
+            </div>
           </>}
     </div></div>}
   </main>
@@ -434,12 +455,4 @@ const TYPE_NOTE: Record<string, string> = {
   decision: 'what you approved or refused, with the margin it kept',
   sector: 'the other kinds of business the same engine can run',
   learned: 'questions you asked and confirmed the meaning of',
-}
-
-
-
-// `hint` is the hover line: where a figure is counted from, so nobody has to guess
-// whether a number is a count, a forecast or a setting.
-function Metric({icon,label,value,detail,tone,hint}:{icon:React.ReactNode;label:string;value:string;detail:string;tone:string;hint?:string}) {
-  return <div className="metric" title={hint}><div className={`metric-icon ${tone}`}>{icon}</div><div><small>{label}</small><strong>{value}</strong><span>{detail}</span></div></div>
 }

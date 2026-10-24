@@ -273,9 +273,8 @@ export default function CopilotChat({
       </header>
 
       <p className="chat-lede">
-        Everything here is worked out from your live stock, then written out in plain words. Every figure
-        is labelled, every answer shows where it came from, and anything that is not about your business
-        is refused rather than guessed at.
+        Answers are worked out from your live stock, with every figure labelled and anything below your
+        floor refused rather than guessed.
       </p>
 
       {!empty && (
@@ -324,24 +323,21 @@ export default function CopilotChat({
 
       {empty && (
         <div className="starters">
-          {(suggestions?.groups || []).map(group => (
-            <article className="starter-group" key={group.title}>
-              <b>{group.title}</b>
-              <small>{group.detail}</small>
+          {suggestions && suggestions.groups.length > 0 && (
+            <article className="starter-group">
+              <b>Start with a question</b>
+              <small>Each answer is worked out from your live numbers.</small>
               <div className="phrase-chips">
-                {group.questions.map(question => (
+                {suggestions.groups.flatMap(group => group.questions).slice(0, 4).map(question => (
                   <button key={question} onClick={() => ask(question)}>{question}</button>
                 ))}
               </div>
             </article>
-          ))}
+          )}
           {suggestions && suggestions.groups.length === 0 && (
             <article className="starter-group">
               <b>There is no stock to ask about yet</b>
-              <small>
-                This workspace has no rows, so every question would come back with nothing to read. Link a
-                database on the OpenEdge tab and the same rows become askable here.
-              </small>
+              <small>Link a database on the OpenEdge tab and the rows become askable here.</small>
             </article>
           )}
           {!suggestions && (
@@ -350,7 +346,6 @@ export default function CopilotChat({
               <small>The answers come from your live numbers, not from a script.</small>
               <div className="phrase-chips">
                 <button onClick={() => ask(sample)}>{sample}</button>
-                <button onClick={() => ask('what will go to waste?')}>What will go to waste?</button>
                 <button onClick={() => ask('what is my margin floor?')}>What is my margin floor?</button>
               </div>
             </article>
@@ -443,15 +438,31 @@ function AnswerCard({
       )}
 
       {data.keyNumbers.length > 0 && (
-        <div className="figures">
-          {data.keyNumbers.map(figure => (
-            <div className="figure" key={figure.label}>
-              <small>{figure.label}</small>
-              <strong>{figure.value}</strong>
-              <span>{figure.note}</span>
-            </div>
-          ))}
-        </div>
+        <>
+          <div className="figures">
+            {data.keyNumbers.slice(0, 6).map(figure => (
+              <div className="figure" key={figure.label}>
+                <small>{figure.label}</small>
+                <strong>{figure.value}</strong>
+                <span>{figure.note}</span>
+              </div>
+            ))}
+          </div>
+          {data.keyNumbers.length > 6 && (
+            <details className="more-figures">
+              <summary>{data.keyNumbers.length - 6} more figures from this answer</summary>
+              <div className="figures">
+                {data.keyNumbers.slice(6).map(figure => (
+                  <div className="figure" key={figure.label}>
+                    <small>{figure.label}</small>
+                    <strong>{figure.value}</strong>
+                    <span>{figure.note}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </>
       )}
 
       {data.glossary.length > 0 && (
