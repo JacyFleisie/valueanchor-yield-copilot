@@ -47,7 +47,7 @@ jobs:
         # is listed, including the evaluation set, the MCP server and the /v1
         # router - a file the suite imports by accident is not the same thing as
         # a file that is checked.
-        run: python -m compileall -q app.py api_v1.py mcp_server.py openedge.py yield_engine.py nlu evals tests
+        run: python -m compileall -q app.py desktop.py api_v1.py mcp_server.py openedge.py yield_engine.py nlu evals tests
 
       - name: Run the suite with coverage
         # No OPENROUTER_API_KEY is set, so the network assistant switches itself

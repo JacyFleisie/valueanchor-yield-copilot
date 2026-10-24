@@ -20,6 +20,11 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 
+# Build output: the frozen desktop executable and PyInstaller's work files.
+# `dist/ValueAnchor.exe` is the release artifact, built by packaging/build_exe.py.
+dist/
+build/
+
 # Logs and local scratch
 logs/
 *.log

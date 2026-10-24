@@ -9,7 +9,7 @@ and the price floor survives, or the recommendation is not made.
 
 <br>
 
-![tests](https://img.shields.io/badge/tests-210%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-215%20passing-brightgreen)
 ![coverage](https://img.shields.io/badge/logic%20coverage-82%25-green)
 ![nlu](https://img.shields.io/badge/local%20NLU-90.1%25-blue)
 ![mcp](https://img.shields.io/badge/MCP-server-built%20%26%20tested-8a2be2)
@@ -104,33 +104,38 @@ the numbers always come from the engine, the words come from the model.
 
 ## 🖥️ Run it
 
-**Option A — the app (recommended)**
+**One file. Download, double-click, done.**
 
-Grab the packaged build for your OS from **Releases**, download, and double-click.
-It opens in your browser at `http://localhost:3000` — no install, no build step.
-(An environment variable `VALUEANCHOR_DB=/path/to/data.db` picks a different database;
-the default lives next to the app.)
+Grab **`ValueAnchor.exe`** from [Releases](../../releases/latest) and double-click it.
+The app opens in your browser at `http://127.0.0.1:8000` — no Python, no Node.js, no
+installer and no second terminal. Keep the small window that appears with it open while
+you use ValueAnchor; closing that window stops it.
 
-**Option B — from source**
+- **Your data stays with the file.** `valueanchor.db` and the trained question-model cache
+  are created next to `ValueAnchor.exe`, so the executable and its data move together.
+- **First start** takes about half a minute while the app unpacks itself and trains the
+  local question model (a freshly downloaded file can take a little longer); later starts
+  reuse that model and are quicker. The browser opens as soon as the address is live.
+- **A different port or database** — `ValueAnchor.exe --port 9000 --db D:\shop\data.db`.
+  `--no-browser` starts it without opening a tab. If 8000 is taken it moves to the next
+  free port and prints the address it got.
+- **An assistant key (optional)** — put a `.env` beside the exe containing
+  `OPENROUTER_API_KEY=...`. Everything still works, a little more plainly, without one.
 
-Two terminals, two commands:
+<details>
+<summary><b>Building the executable (Windows, for developers)</b></summary>
 
 ```bash
-# Terminal 1 — the engine (FastAPI on :8000, seeds demo data on first run)
-cd backend
-pip install -r requirements.txt
-python app.py
+pip install -r backend/requirements.txt -r packaging/requirements-build.txt
+python packaging/build_exe.py
 ```
 
-```bash
-# Terminal 2 — the interface (Next.js on :3000)
-cd frontend
-npm install
-npm run dev
-```
+Needs Python 3.14 and Node.js 20. The script exports the interface, then freezes the
+engine and that export into one file: `dist/ValueAnchor.exe`. The release workflow
+(`.github/workflows/release.yml`) runs exactly this on a version tag and attaches the
+executable to the GitHub release.
 
-Open **http://localhost:3000** and start talking to your stock.
-That's it — no database setup, no API keys required to begin.
+</details>
 
 <details>
 <summary><b>Optional extras</b></summary>
@@ -138,7 +143,7 @@ That's it — no database setup, no API keys required to begin.
 - **Assistant models** — the copilot rewrites its own answers through a free LLM of your
   choosing; pick and key it on the **Settings** tab. Everything still works (a little more
   plainly) without one.
-- **Tests & evals** — `cd backend && python -m pytest` (210 tests) and
+- **Tests & evals** — `cd backend && python -m pytest` (215 tests) and
   `python -m evals.run_evals` (34 scored cases).
 - **MCP host** — point any MCP client at `POST /mcp` to get the yield engine as tools.
 

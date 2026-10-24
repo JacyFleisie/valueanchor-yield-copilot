@@ -5,6 +5,7 @@ from typing import Any
 
 import os
 import sqlite3
+import sys
 import threading
 import time
 from typing import Any
@@ -16,9 +17,17 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 ROOT = Path(__file__).resolve().parent
+# A frozen build (the desktop .exe) unpacks its code and read-only assets into a
+# temporary directory that disappears on exit, so anything that has to survive a
+# restart - the database, the trained-model cache, an optional `.env` - lives
+# beside the executable instead.
+FROZEN = bool(getattr(sys, "frozen", False))
+BUNDLE = Path(getattr(sys, "_MEIPASS", ROOT))
+DATA_ROOT = Path(sys.executable).resolve().parent if FROZEN else ROOT
+
 # The database path is overridable so tests and demos can run against a scratch
 # file instead of the working dataset.
-DB_PATH = Path(os.environ.get("VALUEANCHOR_DB") or ROOT / "valueanchor.db")
+DB_PATH = Path(os.environ.get("VALUEANCHOR_DB") or DATA_ROOT / "valueanchor.db")
 DEFAULT_SECTOR = "coffee"
 # The slug used when the active business is one a business pushed to us through
 # /v1 rather than one of the built-in presets. It is deliberately not a key in
@@ -601,7 +610,7 @@ MAX_SESSIONS = 50
 # questions, because all of that happens here and not in the model.
 # ---------------------------------------------------------------------------
 def _load_env_file() -> None:
-    """Read ``backend/.env`` into the environment if it is there.
+    """Read ``.env`` from beside the executable (or ``backend/``) if it is there.
 
     Fifteen lines rather than a dependency: this is the only configuration the
     server has, and the project deliberately keeps its installed packages to the
@@ -610,8 +619,9 @@ def _load_env_file() -> None:
     convenience for running locally. The file is gitignored, so the key is never
     committed and never reaches the browser.
     """
-    path = ROOT / ".env"
-    if not path.exists():
+    candidates = [DATA_ROOT / ".env", ROOT / ".env"]
+    path = next((candidate for candidate in candidates if candidate.exists()), None)
+    if path is None:
         return
     for line in path.read_text(encoding="utf-8").splitlines():
         entry = line.strip()
@@ -2029,6 +2039,25 @@ def openedge_link(payload: OpenEdgeLinkIn):
             "source of truth; relinking replaces the copy and writes nothing back."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# The interface
+#
+# The desktop build ships the exported Next.js interface inside the executable
+# and serves it from this same origin: one double-click, no Node.js, no second
+# port, no CORS. A source checkout gets the same mount for `frontend/out` once it
+# has been built; with no built folder the API simply has no UI, which is what
+# the test suite runs against.
+# ---------------------------------------------------------------------------
+UI_DIR = Path(
+    os.environ.get("VALUEANCHOR_UI")
+    or (BUNDLE / "frontend_out" if FROZEN else ROOT.parent / "frontend" / "out")
+)
+if UI_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=UI_DIR, html=True), name="ui")
 
 
 if __name__ == "__main__":

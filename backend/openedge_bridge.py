@@ -49,6 +49,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import subprocess
 import time
 from dataclasses import dataclass
@@ -58,6 +59,20 @@ from typing import Any, Callable
 # The bridge runs exactly one program, and only ever this one. A caller cannot
 # name a different program through the tool surface - see ``call_tool``.
 PROGRAM_NAME = "06-enquiry-json.p"
+
+
+def _bundled_openedge_dir() -> Path:
+    """The read-only ``openedge/`` folder in a checkout or inside the .exe.
+
+    A frozen build unpacks bundled data beside the module, so ``__file__`` still
+    resolves inside the bundle; a checkout keeps the folder at the project root.
+    """
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        return Path(bundle) / "openedge"
+    return Path(__file__).resolve().parent.parent / "openedge"
+
+
 DEFAULT_DATABASE = "coffee"
 
 # How long to wait for the AVM. First runs pay for the process start, and a
@@ -133,7 +148,7 @@ def find_prowin(home: Path | None = None) -> Path | None:
 
 def find_program(home: Path | None = None) -> Path | None:
     """``06-enquiry-json.p``, looked for beside this file and then in OPENEDGE_HOME."""
-    here = Path(__file__).resolve().parent.parent / "openedge" / PROGRAM_NAME
+    here = _bundled_openedge_dir() / PROGRAM_NAME
     if here.is_file():
         return here
     home = home or _home_from_env()
@@ -165,7 +180,7 @@ def find_database(name: str, home: Path | None = None) -> Path | None:
 
 
 def _database_search_path(home: Path | None) -> list[Path]:
-    here = Path(__file__).resolve().parent.parent / "openedge"
+    here = _bundled_openedge_dir()
     paths = [here, Path.cwd() / "openedge", Path.cwd()]
     if home is not None:
         paths.append(home)

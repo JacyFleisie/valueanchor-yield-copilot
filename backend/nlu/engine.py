@@ -31,6 +31,7 @@ import os
 import pathlib
 import re
 import statistics
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,10 +50,16 @@ ENGLISH_DICTIONARY = pathlib.Path(symspellpy.__file__).parent / "frequency_dicti
 
 # The trained classifier is small (a few hundred KB) and is only rebuilt when
 # what it was trained from actually changes. The directory is overridable so
-# tests and read-only deployments can point it somewhere disposable.
-CACHE_DIR = pathlib.Path(
-    os.environ.get("VALUEANCHOR_MODEL_CACHE") or pathlib.Path(__file__).resolve().parent.parent / ".model_cache"
-)
+# tests and read-only deployments can point it somewhere disposable. In a frozen
+# desktop build the code folder is a temporary extraction directory, so the
+# default sits beside the executable where it survives a restart.
+def _default_cache_dir() -> pathlib.Path:
+    if getattr(sys, "frozen", False):
+        return pathlib.Path(sys.executable).resolve().parent / ".model_cache"
+    return pathlib.Path(__file__).resolve().parent.parent / ".model_cache"
+
+
+CACHE_DIR = pathlib.Path(os.environ.get("VALUEANCHOR_MODEL_CACHE") or _default_cache_dir())
 
 
 def _cache_path() -> pathlib.Path:

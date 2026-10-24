@@ -1,0 +1,3 @@
+# Build-time only: PyInstaller freezes backend/desktop.py + the exported
+# frontend into dist/ValueAnchor.exe. Nothing here is needed to run the app.
+pyinstaller==6.22.3
