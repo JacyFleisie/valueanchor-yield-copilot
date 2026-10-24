@@ -75,7 +75,11 @@ jobs:
           fi
 
       - name: Upload coverage report
+        # A convenience for reading the file after the run, never a verdict: the
+        # numbers are already in the step above, and exhausting the account's
+        # artifact storage quota must not turn a passing suite red.
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: backend-coverage
