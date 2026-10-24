@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           # Matches the interpreter the project is developed and run on. The
           # pinned wheels in requirements.txt all publish cp314 builds.
