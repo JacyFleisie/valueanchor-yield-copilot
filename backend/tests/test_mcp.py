@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 import app as app_module
 import mcp_server
+import version
 
 
 @pytest.fixture(scope="session")
@@ -97,6 +98,9 @@ def test_the_handshake_era_is_served_and_echoes_the_version_it_was_asked_for(cli
     assert result["protocolVersion"] == "2025-06-18"
     assert result["capabilities"]["tools"] == {"listChanged": False}
     assert result["serverInfo"]["name"] == "valueanchor"
+    # The release version is stated once; an MCP host reading serverInfo and an
+    # owner reading the footer must not be told two different numbers.
+    assert result["serverInfo"]["version"] == version.VERSION
 
 
 def test_an_unknown_requested_version_falls_back_to_the_current_one(client):

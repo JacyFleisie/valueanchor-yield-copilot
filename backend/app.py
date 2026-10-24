@@ -16,6 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
+from version import VERSION
+
 ROOT = Path(__file__).resolve().parent
 # A frozen build (the desktop .exe) unpacks its code and read-only assets into a
 # temporary directory that disappears on exit, so anything that has to survive a
@@ -249,7 +251,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="ValueAnchor Yield Copilot", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="ValueAnchor Yield Copilot", version=VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -856,7 +858,10 @@ def session_state(session_id: str) -> dict[str, Any]:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "ValueAnchor"}
+    # The version rides along with the liveness answer because it is the one place
+    # every client already looks: the interface prints it in the footer, and a
+    # support question starts with "which build are you on?"
+    return {"status": "ok", "service": "ValueAnchor", "version": VERSION}
 
 
 # The three preset routes that used to live here - GET /api/sectors,

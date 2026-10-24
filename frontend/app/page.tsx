@@ -89,6 +89,16 @@ export default function Home() {
   // header would undercut it. Set after mount so the server and client render the
   // same markup and hydration stays quiet.
   const [clock, setClock] = useState<{ day:string; greeting:string } | null>(null)
+  // The build the owner is running, read from the engine instead of typed into the
+  // markup: the API version, the MCP server's serverInfo and this footer quote one
+  // constant, and a footer that states its own number is how they drifted before.
+  const [appVersion, setAppVersion] = useState('')
+  useEffect(() => {
+    fetch(`${API}/api/health`)
+      .then(response => response.ok ? response.json() : null)
+      .then(body => { if (body?.version) setAppVersion(String(body.version)) })
+      .catch(() => {})
+  }, [])
   useEffect(() => {
     const now = new Date()
     setClock({
@@ -386,7 +396,7 @@ export default function Home() {
               </div>)}
         </div>
       </>}
-      <footer><span>ValueAnchor v1.1 · {profile?.currencyCode ?? 'ZAR'} <i/> {profile?.businessName ?? 'ValueAnchor'}</span><span><span className="online"/> All systems operational</span></footer>
+      <footer><span>ValueAnchor{appVersion ? ` v${appVersion}` : ''} · {profile?.currencyCode ?? 'ZAR'} <i/> {profile?.businessName ?? 'ValueAnchor'}</span><span><span className="online"/> All systems operational</span></footer>
     </section>
 
     {selected && <div className="modal-backdrop" onClick={() => setSelected(null)}><div className="modal" onClick={event => event.stopPropagation()}>

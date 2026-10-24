@@ -36,11 +36,13 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from version import VERSION
+
 # ---------------------------------------------------------------------------
 # Identity and protocol
 # ---------------------------------------------------------------------------
 
-SERVER_INFO = {"name": "valueanchor", "version": "1.1.0"}
+SERVER_INFO = {"name": "valueanchor", "version": VERSION}
 
 # Newest first. A client that asks for the current revision gets it; a client that
 # asks for one of the earlier handshake revisions gets the revision it asked for,

@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
+import version
 from nlu import IntentEngine, build_lexicon
 from nlu.assistant import CopilotAssistant
 from nlu.dataset import INTENTS
@@ -261,6 +262,14 @@ def test_health_and_inventory(client):
     assert client.get("/api/health").json()["status"] == "ok"
     inventory = client.get("/api/inventory").json()
     assert inventory["items"] and inventory["profile"]["businessName"]
+
+
+def test_the_version_health_reports_is_the_one_the_package_defines(client):
+    # Regression: the interface footer, the FastAPI version and the MCP server each
+    # used to state a version, and a release was tagged v1.0.0 while all three said
+    # 1.1. One constant, and this test is what keeps a tag honest.
+    assert client.get("/api/health").json()["version"] == version.VERSION
+    assert version.VERSION.count(".") == 2, "a release version is major.minor.patch"
 
 
 def test_copilot_returns_an_answer_and_its_working(client):

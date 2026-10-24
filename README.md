@@ -9,7 +9,7 @@ and the price floor survives, or the recommendation is not made.
 
 <br>
 
-![tests](https://img.shields.io/badge/tests-215%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-216%20passing-brightgreen)
 ![coverage](https://img.shields.io/badge/logic%20coverage-82%25-green)
 ![nlu](https://img.shields.io/badge/local%20NLU-90.1%25-blue)
 ![mcp](https://img.shields.io/badge/MCP-server-built%20%26%20tested-8a2be2)
@@ -143,7 +143,7 @@ executable to the GitHub release.
 - **Assistant models** — the copilot rewrites its own answers through a free LLM of your
   choosing; pick and key it on the **Settings** tab. Everything still works (a little more
   plainly) without one.
-- **Tests & evals** — `cd backend && python -m pytest` (215 tests) and
+- **Tests & evals** — `cd backend && python -m pytest` (216 tests) and
   `python -m evals.run_evals` (34 scored cases).
 - **MCP host** — point any MCP client at `POST /mcp` to get the yield engine as tools.
 
