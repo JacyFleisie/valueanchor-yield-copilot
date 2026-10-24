@@ -4,6 +4,23 @@ import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw, ShieldCheck } from 'lucide-react'
 import ModelsTab from './ModelsTab'
 
+// Both settings are picks rather than typed values: a floor is a policy choice,
+// and a currency code already knows its symbol - asking for both invited a code
+// and a symbol that disagreed with each other.
+const FLOOR_STEPS = [40, 45, 50, 55, 60, 65, 70, 75, 80]
+const CURRENCIES = [
+  { code: 'ZAR', symbol: 'R' },
+  { code: 'USD', symbol: '$' },
+  { code: 'EUR', symbol: '€' },
+  { code: 'GBP', symbol: '£' },
+  { code: 'KES', symbol: 'KSh' },
+  { code: 'NGN', symbol: '₦' },
+  { code: 'AUD', symbol: 'A$' },
+  { code: 'CAD', symbol: 'C$' },
+  { code: 'INR', symbol: '₹' },
+  { code: 'AED', symbol: 'AED' },
+]
+
 // Exactly what GET /api/profile returns - the same object the yield engine and
 // the copilot read, so this screen edits the real thing rather than a copy.
 type Profile = {
@@ -19,13 +36,13 @@ type Profile = {
   connected: boolean
 }
 
-export default function SettingsTab({ api }: { api: string }) {
+export default function SettingsTab({ api, onSaved }: { api: string; onSaved?: () => void }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [health, setHealth] = useState<'checking' | 'ok' | 'down'>('checking')
   const [problem, setProblem] = useState('')
 
-  // Both editable numbers are drafts, so the field shows what the owner is
-  // typing and only Save reaches the profile every other screen reads.
+  // Both editable settings are drafts, so the field shows what the owner picked
+  // and only Save reaches the profile every other screen reads.
   const [floorDraft, setFloorDraft] = useState('')
   const [currencyDraft, setCurrencyDraft] = useState({ code: '', symbol: '' })
   const [saving, setSaving] = useState(false)
@@ -78,6 +95,10 @@ export default function SettingsTab({ api }: { api: string }) {
       const body = await response.json()
       setProfile(body.profile)
       setNote(body.note ?? '')
+      // The floor and the currency are read by every other screen, so the
+      // workspace reloads now rather than showing yesterday's number until the
+      // owner happens to refresh.
+      onSaved?.()
     } catch {
       setNote('That floor was not saved - the request was refused. Nothing on this page changed.')
     } finally {
@@ -96,6 +117,7 @@ export default function SettingsTab({ api }: { api: string }) {
       if (!response.ok) throw new Error('rejected')
       setProfile(await response.json())
       setNote(`Money across the workspace is now reported in ${currencyDraft.code}.`)
+      onSaved?.()
     } catch {
       setNote('That currency was not saved - it needs a three-letter ISO code and a symbol of one to three characters.')
     } finally {
@@ -103,11 +125,19 @@ export default function SettingsTab({ api }: { api: string }) {
     }
   }
 
+  // A profile can hold a value this list does not ship with (an older floor, or
+  // a currency added by hand). It is offered as itself rather than silently
+  // snapped to a neighbour the owner never chose.
+  const floorChoices = Array.from(new Set([...FLOOR_STEPS, profile?.marginFloorPct ?? 60])).sort((a, b) => a - b)
+  const currencyChoices = profile && !CURRENCIES.some(currency => currency.code === profile.currencyCode)
+    ? [...CURRENCIES, { code: profile.currencyCode, symbol: profile.currencySymbol }]
+    : CURRENCIES
+
   return (
     <div className="tab-panel">
       <p className="eyebrow accent">SETTINGS</p>
-      <h2>Owner customisation</h2>
-      <p>Everything an owner is allowed to change lives here: the floor every answer prices against, the currency money is reported in, and the assistant chain. Stock itself is not changed from this tab - it arrives through Link this database on the OpenEdge tab, and a second way in would be a second source of truth.</p>
+      <h2>Your floor, your money, your assistant</h2>
+      <p>The floor every answer prices against, the currency money is reported in, and the models that may reword an answer.</p>
 
       {problem && <div className="notice">{problem}</div>}
 
@@ -124,18 +154,16 @@ export default function SettingsTab({ api }: { api: string }) {
         <div className="guardrail-row">
           <span>Minimum retained margin</span>
           <div className="guardrail-control">
-            <input
-              type="number"
-              className="guardrail-input"
-              min={10}
-              max={95}
-              step={5}
+            <select
+              className="guardrail-select floor"
               aria-label="Minimum retained margin, percent"
               title="The margin floor, as a percentage of shelf price. Saving it changes what every bundle, pairing and copilot answer is priced against."
               value={floorDraft}
+              disabled={!profile}
               onChange={(event) => setFloorDraft(event.target.value)}
-            />
-            <b>%</b>
+            >
+              {floorChoices.map(value => <option key={value} value={value}>{value}%</option>)}
+            </select>
             <button
               className="guardrail-save"
               title="Writes your floor onto the profile the engine reads."
@@ -167,24 +195,19 @@ export default function SettingsTab({ api }: { api: string }) {
         <div className="guardrail-row">
           <span>Reporting currency</span>
           <div className="guardrail-control">
-            <input
-              type="text"
-              className="guardrail-input short"
-              maxLength={3}
-              aria-label="Currency code"
-              title="Three-letter ISO code, e.g. ZAR."
+            <select
+              className="guardrail-select currency"
+              aria-label="Reporting currency"
+              title="The currency money is reported in. Picking a code sets its symbol too, so the two cannot disagree."
               value={currencyDraft.code}
-              onChange={(event) => setCurrencyDraft({ ...currencyDraft, code: event.target.value.toUpperCase() })}
-            />
-            <input
-              type="text"
-              className="guardrail-input short"
-              maxLength={3}
-              aria-label="Currency symbol"
-              title="One to three characters, e.g. R."
-              value={currencyDraft.symbol}
-              onChange={(event) => setCurrencyDraft({ ...currencyDraft, symbol: event.target.value })}
-            />
+              disabled={!profile}
+              onChange={(event) => {
+                const chosen = currencyChoices.find(currency => currency.code === event.target.value)
+                setCurrencyDraft({ code: event.target.value, symbol: chosen?.symbol ?? currencyDraft.symbol })
+              }}
+            >
+              {currencyChoices.map(currency => <option key={currency.code} value={currency.code}>{currency.code} · {currency.symbol}</option>)}
+            </select>
             <button
               className="guardrail-save"
               onClick={saveCurrency}
@@ -203,10 +226,8 @@ export default function SettingsTab({ api }: { api: string }) {
 
       {note && <p className="modal-note accent">{note}</p>}
       <p className="modal-note">
-        A floor set here is stored on this business&apos;s profile, so the planner, the pairing costs, the profit
-        scenarios and the copilot all read the same number rather than a second copy that can fall out of step. The
-        floor this workspace arrived with is not thrown away: clearing the override returns to it, and the row above
-        says which one is in force.
+        One floor, read by everything: the planner, the pairings, the profit scenarios and the copilot.
+        Clearing your override returns to the floor this workspace arrived with.
       </p>
 
       <div className="model-add-actions">
@@ -215,13 +236,14 @@ export default function SettingsTab({ api }: { api: string }) {
         </button>
       </div>
 
-      {/* The assistant registry is the whole of the old Models screen: which
-          models are configured, the order they are tried in, and why any of
-          them cannot answer right now. It keeps its own panel because it is a
-          list an owner edits, not a single value like the rows above. */}
-      <div style={{ marginTop: '30px' }}>
-        <ModelsTab />
-      </div>
+      {/* The assistant registry is a list an owner edits occasionally, not a
+          value they check daily, so it stays closed until asked for. */}
+      <details className="fold settings-fold">
+        <summary>Assistant models</summary>
+        <div className="fold-body">
+          <ModelsTab />
+        </div>
+      </details>
 
       <div className="guardrail-row" style={{ marginTop: '22px' }}>
         <span><ShieldCheck size={14}/> Keys</span>

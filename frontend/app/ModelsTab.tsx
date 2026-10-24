@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, ChevronDown, ChevronUp, Gauge, Loader2, Plug, Plus, RefreshCw, Trash2, Zap } from 'lucide-react'
 
-const API = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000')
+// See page.tsx: relative when served by the desktop app, :8000 under `next dev`.
+const API = process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' && window.location.port !== '3000' ? '' : 'http://localhost:8000')
 
 type Health = {
   LastStatus?: string | null
@@ -79,6 +80,28 @@ function countdown(seconds: number): string {
   return `${s}s`
 }
 
+// Where a model runs is the only choice that has to be made: the provider, the
+// endpoint and the key variable all follow from it. Typing those three by hand
+// let a model be saved pointing at one server with another server's key.
+const RUNTIMES = [
+  { slug: 'openrouter', name: 'OpenRouter (free models)', provider: 'openrouter', baseUrl: '' },
+  { slug: 'ollama', name: 'Ollama on this machine', provider: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' },
+  { slug: 'lmstudio', name: 'LM Studio on this machine', provider: 'openai-compatible', baseUrl: 'http://localhost:1234/v1' },
+  { slug: 'llamacpp', name: 'llama.cpp server', provider: 'openai-compatible', baseUrl: 'http://localhost:8080/v1' },
+  { slug: 'vllm', name: 'vLLM server', provider: 'openai-compatible', baseUrl: 'http://localhost:8000/v1' },
+  { slug: 'custom', name: 'Another OpenAI-compatible server', provider: 'openai-compatible', baseUrl: '' },
+]
+
+// The free models this build ships with. Offered as picks so adding one is a
+// click; anything outside the list is still reachable through the last option.
+const OPENROUTER_PICKS = [
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'liquid/lfm-2.5-2.6b:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+]
+const CUSTOM_MODEL = '__custom'
+
 export default function ModelsTab() {
   const [data, setData] = useState<Payload | null>(null)
   const [notice, setNotice] = useState('')
@@ -88,7 +111,10 @@ export default function ModelsTab() {
   // the real reset time; this only renders it second by second.
   const [tick, setTick] = useState(0)
 
-  const [draft, setDraft] = useState({ modelId: '', provider: 'openrouter', label: '', baseUrl: '', keyEnv: '' })
+  const [runtime, setRuntime] = useState('openrouter')
+  const [modelChoice, setModelChoice] = useState(OPENROUTER_PICKS[0])
+  const [customModel, setCustomModel] = useState('')
+  const [customBaseUrl, setCustomBaseUrl] = useState('')
   const [showAdd, setShowAdd] = useState(false)
 
   const load = useCallback(async () => {
@@ -169,20 +195,38 @@ export default function ModelsTab() {
   }
 
   const add = async () => {
-    if (!draft.modelId.trim()) { setNotice('Give the model an id, for example nvidia/nemotron-3-super-120b-a12b:free'); return }
+    const chosen = RUNTIMES.find(entry => entry.slug === runtime) ?? RUNTIMES[0]
+    const modelId = (modelChoice === CUSTOM_MODEL ? customModel : modelChoice).trim()
+    if (!modelId) { setNotice('Pick a model first.'); return }
+    const baseUrl = runtime === 'custom' ? customBaseUrl.trim() : chosen.baseUrl
+    if (runtime === 'custom' && !baseUrl) {
+      setNotice('Give the server address, for example http://localhost:8000/v1')
+      return
+    }
+    // The key variable comes from the provider catalogue rather than a field, so
+    // it always names a variable the server actually reads.
+    const keyEnv = data?.providers.find(provider => provider.slug === chosen.provider)?.keyEnv
     const result = await call('/api/models', 'POST', {
-      modelId: draft.modelId.trim(),
-      provider: draft.provider,
-      label: draft.label.trim() || undefined,
-      baseUrl: draft.baseUrl.trim() || undefined,
-      keyEnv: draft.keyEnv.trim() || undefined,
+      modelId,
+      provider: chosen.provider,
+      baseUrl: baseUrl || undefined,
+      keyEnv: keyEnv || undefined,
     }, 'add')
     if (result?.added) {
-      setDraft({ modelId: '', provider: draft.provider, label: '', baseUrl: '', keyEnv: '' })
+      setCustomModel('')
+      setCustomBaseUrl('')
       setShowAdd(false)
       setNotice('')
     }
   }
+
+  // Models this build already knows about for the chosen runtime, so the list is
+  // never empty when something has been added before.
+  const chosenRuntime = RUNTIMES.find(entry => entry.slug === runtime) ?? RUNTIMES[0]
+  const modelOptions = Array.from(new Set([
+    ...(runtime === 'openrouter' ? OPENROUTER_PICKS : []),
+    ...(data?.models ?? []).filter(model => model.Provider === chosenRuntime.provider).map(model => model.ModelId),
+  ]))
 
   if (!data) {
     return (
@@ -315,33 +359,60 @@ export default function ModelsTab() {
         <div className="model-add">
           <p className="eyebrow">ADD A MODEL</p>
           <p className="model-add-note">
-            Any model id works here — nothing is checked against a list. Paste a free model from any provider, or point at
-            a model running on your own machine. Keys are never typed here: the entry names the environment variable the
-            server already holds, so the key stays on the server and never reaches this browser.
+            Pick where it runs and which model. The endpoint and the key variable are set by that choice, so a model
+            is never saved pointing at one server with another server&apos;s key. Keys are not typed here at all: the
+            entry names the environment variable the server already holds.
           </p>
           <div className="model-form">
             <label>
-              <small>MODEL ID</small>
-              <input value={draft.modelId} placeholder="nvidia/nemotron-3-super-120b-a12b:free" onChange={event => setDraft({ ...draft, modelId: event.target.value })} />
-            </label>
-            <label>
-              <small>PROVIDER</small>
-              <select value={draft.provider} onChange={event => setDraft({ ...draft, provider: event.target.value, baseUrl: '', keyEnv: '' })}>
-                {data.providers.map(provider => <option key={provider.slug} value={provider.slug}>{provider.name}</option>)}
+              <small>WHERE IT RUNS</small>
+              <select
+                value={runtime}
+                onChange={event => {
+                  const next = event.target.value
+                  const nextRuntime = RUNTIMES.find(entry => entry.slug === next) ?? RUNTIMES[0]
+                  // The model list belongs to the runtime, so a pick from the old
+                  // one would otherwise be saved against a server that cannot serve it.
+                  const nextPicks = Array.from(new Set([
+                    ...(next === 'openrouter' ? OPENROUTER_PICKS : []),
+                    ...data.models.filter(model => model.Provider === nextRuntime.provider).map(model => model.ModelId),
+                  ]))
+                  setRuntime(next)
+                  setModelChoice(nextPicks[0] ?? CUSTOM_MODEL)
+                }}
+              >
+                {RUNTIMES.map(entry => <option key={entry.slug} value={entry.slug}>{entry.name}</option>)}
               </select>
             </label>
             <label>
-              <small>LABEL (OPTIONAL)</small>
-              <input value={draft.label} placeholder="What to call it in the list" onChange={event => setDraft({ ...draft, label: event.target.value })} />
+              <small>MODEL</small>
+              <select value={modelChoice} onChange={event => setModelChoice(event.target.value)}>
+                {modelOptions.map(id => <option key={id} value={id}>{id}</option>)}
+                <option value={CUSTOM_MODEL}>
+                  {modelOptions.length === 0 ? 'Type the model’s name' : 'Something not listed…'}
+                </option>
+              </select>
             </label>
-            <label>
-              <small>ENDPOINT (OPTIONAL)</small>
-              <input value={draft.baseUrl} placeholder={data.providers.find(p => p.slug === draft.provider)?.baseUrl || 'http://localhost:11434/v1'} onChange={event => setDraft({ ...draft, baseUrl: event.target.value })} />
-            </label>
-            <label>
-              <small>KEY VARIABLE (OPTIONAL)</small>
-              <input value={draft.keyEnv} placeholder={data.providers.find(p => p.slug === draft.provider)?.keyEnv || 'LLM_API_KEY'} onChange={event => setDraft({ ...draft, keyEnv: event.target.value })} />
-            </label>
+            {modelChoice === CUSTOM_MODEL && (
+              <label>
+                <small>MODEL NAME</small>
+                <input
+                  value={customModel}
+                  placeholder={runtime === 'openrouter' ? 'vendor/model:free' : 'llama3.2:3b'}
+                  onChange={event => setCustomModel(event.target.value)}
+                />
+              </label>
+            )}
+            {runtime === 'custom' && (
+              <label>
+                <small>SERVER ADDRESS</small>
+                <input
+                  value={customBaseUrl}
+                  placeholder="http://localhost:8000/v1"
+                  onChange={event => setCustomBaseUrl(event.target.value)}
+                />
+              </label>
+            )}
           </div>
           <div className="model-add-actions">
             <button className="primary-action" disabled={busy === 'add'} onClick={add}>
@@ -350,7 +421,8 @@ export default function ModelsTab() {
             <button className="ghost" onClick={() => { setShowAdd(false); setNotice('') }}>Cancel</button>
           </div>
           <p className="modal-note">
-            {data.providers.find(p => p.slug === draft.provider)?.note}
+            {data.providers.find(p => p.slug === chosenRuntime.provider)?.note}{' '}
+            {chosenRuntime.baseUrl ? `Calls go to ${chosenRuntime.baseUrl}.` : 'Calls go to the address you type.'}
           </p>
         </div>
       ) : (
