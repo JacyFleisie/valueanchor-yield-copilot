@@ -46,6 +46,11 @@ jobs:
         run: python packaging/build_exe.py
 
       - name: Upload the executable as an artifact
+        # Only useful for a manual run, where there is no release to attach the
+        # file to. Artifact storage is a separate quota from release assets, and
+        # exhausting it must not stop the download that the README points at from
+        # being published - which is what happened on the first v1.0.0 attempt.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ValueAnchor-windows
