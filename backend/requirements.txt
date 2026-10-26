@@ -1,7 +1,7 @@
 # Web layer
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-httpx==0.27.2
+fastapi==0.161.1
+uvicorn[standard]==0.54.0
+httpx==0.28.1
 
 # Local NLU: intent classification, fuzzy catalogue matching, spelling repair.
 # All three ship wheels for current Python, and none of them download weights or
@@ -17,4 +17,4 @@ symspellpy==6.10.0
 # that decides them, so its coverage is the number worth watching.
 pytest==8.4.2
 pytest-cov==6.2.1
-coverage==7.10.6
+coverage==7.17.0
