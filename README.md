@@ -100,6 +100,9 @@ the numbers always come from the engine, the words come from the model.
 5. **Check the floor** — every answer shows the arithmetic, the floor it's priced against,
    and where that floor came from. Change floor, currency, and assistant models on **Settings**.
 
+**The detail behind the OpenEdge side** — what each direction is, what to run, and the
+step-by-step for setting the database up from nothing — is in [docs/OPENEDGE.md](docs/OPENEDGE.md).
+
 ---
 
 ## 🖥️ Run it
