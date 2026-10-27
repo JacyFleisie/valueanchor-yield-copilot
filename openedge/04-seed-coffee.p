@@ -9,9 +9,13 @@
    names, prices, capacities and hours-left), so both halves of the integration
    tell one story instead of two.
 
-   Run it from a proenv prompt, after 03-coffee-ddl.sql has created the table:
+   Run it from a proenv prompt, after 03-coffee-ddl.sql has created the table, and
+   redirect the output: batch mode leaves the AVM no terminal to print into, so a
+   DISPLAY without one fails with error 516 before it prints a line (01-hello.p
+   sets that out at length).
 
-       prowin -b -db coffee -1 -p 04-seed-coffee.p
+       prowin -b -db coffee -1 -p 04-seed-coffee.p > 04-check.out
+       type 04-check.out
 
    WHAT THE TWO ABL STATEMENTS MEAN
 

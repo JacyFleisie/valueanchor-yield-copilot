@@ -6,11 +6,18 @@
    It runs against Sports2000, the demonstration database the Developers Kit ships
    with, so it works before you have a database of your own.
 
-   Run it from a proenv prompt:
+   Run it from a proenv prompt, redirecting the output:
 
-       prowin -b -db sports2000 -1 -p 02-read-customer.p
+       prowin -b -db sports2000 -1 -p 02-read-customer.p > 02-check.out
+       type 02-check.out
 
    THREE THINGS ABOUT BATCH OUTPUT, LEARNED BY RUNNING THIS ON WINDOWS 12.8
+
+   The first is the redirect above, and it is not decoration: batch mode leaves
+   the AVM no terminal, so a DISPLAY with nowhere to write stops the program with
+   "** Attempt to write with no current output destination. (516)" in a message
+   box, before a single line prints. A file is a destination; an interactive
+   console is not. The other two are below.
 
    Everything below the connect check is arranged around one fact the kit's
    comment version got wrong: in batch mode, DISPLAY writes into a *frame*, and

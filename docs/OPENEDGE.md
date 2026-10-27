@@ -107,7 +107,7 @@ Nothing else has to be installed, provisioned, or paid for.
 
    ```
    ValueAnchor: the AVM is up. OpenEdge 12.8 on WIN32 <your-name>, 10/27/2026 18:33:23
-   Program file: openedge/01-hello.p
+   Program file: openedge\01-hello.p      (however you spelled the -p path)
    Now run 02-read-customer.p against the demo database.
    ```
 
@@ -226,7 +226,7 @@ than implying it works.
 | *No storage file for database 'coffee'…* | `coffee.db` not found | `prodb coffee empty` in `openedge\`, or set `OPENEDGE_DB` to its full path |
 | *The table is not in 'coffee'…* | table created in the wrong schema, or never created | Run `03-coffee-ddl.sql` — with `pub.` and `COMMIT;` |
 | *'coffee' is being served by another process…* | `proserve` still running | `_mprshut`, answer `2` |
-| *…has the coffee_item table but no rows…* | DDL ran, seeder did not | `prowin -b -db coffee -1 -p 04-seed-coffee.p` |
+| *…has the coffee_item table but no rows…* | DDL ran, seeder did not | `prowin -b -db coffee -1 -p 04-seed-coffee.p > 04-check.out` then `type 04-check.out` |
 | *The AVM did not finish… within 90 seconds* | first cold start on a slow machine | Retry once; raise `OPENEDGE_TIMEOUT` only if it is genuinely slow |
 | **A message box reading** *Attempt to write with no current output destination. (516)*, and nothing printed | Batch mode gives the AVM no terminal, so the program's `DISPLAY` has no destination to write its frame into. It is not a broken install, not a PATH problem, and not a missing database. | Redirect: `prowin -b -p openedge\01-hello.p > 01-check.out` then `type 01-check.out`. Same for 02, 04 and 05. (Untested: whether a `PUT`-only program such as 06 survives a bare console run here — it was verified redirected, and every command in these docs redirects.) |
 

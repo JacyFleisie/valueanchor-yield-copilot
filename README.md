@@ -84,6 +84,10 @@ Pressing **Link this database** runs exactly one command:
 prowin.exe -b -db openedge\coffee.db -1 -p openedge\06-enquiry-json.p
 ```
 
+(The app gives it a pipe to write into. Typed by hand in a console instead, add
+`> 06-check.out` and read that file — a batch AVM has no terminal, and a framed
+program that prints to one stops with error 516. [docs/OPENEDGE.md §6](docs/OPENEDGE.md).)
+
 `-b` is batch mode and `-1` is **single-user**, so there is no AdminServer, no broker and no
 DBServer to start first: the app opens the database file directly. That program contains no
 `CREATE`, `ASSIGN`, `UPDATE` or `DELETE`, and no argument can point the bridge at a different

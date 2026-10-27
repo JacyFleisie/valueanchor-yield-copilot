@@ -7,9 +7,11 @@
    pre-work and the demo are one story: the kit's exercise proves a database
    read works; this one proves YOUR rows are in it.
 
-   Run it from a proenv prompt:
+   Run it from a proenv prompt, redirecting the output (batch mode leaves the AVM
+   no terminal to write a frame into, so a bare run stops with error 516):
 
-       prowin -b -db coffee -1 -p 05-read-coffee.p
+       prowin -b -db coffee -1 -p 05-read-coffee.p > 05-check.out
+       type 05-check.out
 
    The totals at the bottom are the part to look at: units left and value on
    the shelf are summed inside the AVM, over rows this program never typed.

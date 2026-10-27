@@ -9,9 +9,12 @@
    caller can parse. That caller is openedge/enquiry_bridge.py, which turns this
    document into a proper MCP tool result and hands it to the backend.
 
-   Run it from a proenv prompt, after 04 has seeded the database:
+   Run it from a proenv prompt, after 04 has seeded the database, redirecting the
+   output to match the rest of the folder - and because the caller really does
+   read this document from a pipe, which is what the redirect simulates:
 
-       prowin -b -db coffee -1 -p 06-enquiry-json.p
+       prowin -b -db coffee -1 -p 06-enquiry-json.p > 06-check.out
+       type 06-check.out
 
    WHAT COMES OUT
 
