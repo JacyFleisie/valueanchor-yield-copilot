@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 import app as app_module
 import openedge
+import version
 
 
 TOKEN_SENTINEL = "eyJhbGciOi-JWT-THAT-MUST-NEVER-BE-RETURNED"
@@ -154,6 +155,10 @@ def test_a_handshake_endpoint_is_probed_that_way_first(monkeypatch, openedge_con
     # The credential travels as the documented header, with the documented prefix.
     assert calls[0]["headers"]["X-OEMCP-SERVICEACCOUNT"] == TOKEN_SENTINEL
     assert TOKEN_SENTINEL not in json.dumps(report)
+    # The probe introduces itself with the release version, read from the one
+    # constant. This used to be a second copy of the number, which a version bump
+    # would have left behind in a log on somebody else's server.
+    assert calls[0]["payload"]["params"]["clientInfo"] == {"name": "valueanchor", "version": version.VERSION}
 
 
 def test_a_stateless_endpoint_is_probed_through_discovery(monkeypatch, openedge_configured):

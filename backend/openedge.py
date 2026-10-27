@@ -29,6 +29,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+# The same constant the API and the MCP server report, so the version this probe
+# introduces itself with cannot be left behind by a release. An OpenEdge MCP
+# Server logs this clientInfo, so a stale number here would be a stale number in
+# somebody else's log.
+from version import VERSION
+
 # The current MCP revision and the handshake revision the probe falls back to.
 # The OpenEdge MCP Server ships for clients on the handshake era, so a probe that
 # only knew the current one would report a working server as unreachable.
@@ -206,7 +212,7 @@ def probe(endpoint: Endpoint, timeout: float = PROBE_TIMEOUT_SECONDS) -> dict[st
                 {
                     "protocolVersion": HANDSHAKE_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "valueanchor", "version": "1.1.0"},
+                    "clientInfo": {"name": "valueanchor", "version": VERSION},
                 },
                 1,
             ),
