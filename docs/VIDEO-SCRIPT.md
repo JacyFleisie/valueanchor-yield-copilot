@@ -19,12 +19,22 @@ this cut) before you cut the floor moment in section 2 — that is the product.
    cd "C:\...\valueanchor-yield-copilot"
    .\dist\ValueAnchor.exe
    ```
-2. **Warm the AVM once**, so the first click in the video is not a 20-second pause:
+2. **Warm the AVM once**, so the first click in the video is not a 20-second pause.
+   **Redirect each command to a file** — a batch AVM has no terminal to print into, so
+   without the `>` you get an error box (`Attempt to write with no current output
+   destination. (516)`) and no output at all. See [OPENEDGE.md §6](OPENEDGE.md):
    ```
-   C:\Progress\OpenEdge\bin\prowin.exe -b -p openedge\01-hello.p
-   C:\Progress\OpenEdge\bin\prowin.exe -b -db openedge\coffee.db -1 -p openedge\06-enquiry-json.p
+   C:\Progress\OpenEdge\bin\prowin.exe -b -p openedge\01-hello.p > openedge\01-check.out
+   type openedge\01-check.out
+   C:\Progress\OpenEdge\bin\prowin.exe -b -db openedge\coffee.db -1 -p openedge\06-enquiry-json.p > openedge\06-check.out
+   type openedge\06-check.out
    ```
-   You should see **5 rows** come back. If you do, the live database shot will work.
+   The first prints `OpenEdge 12.8 on WIN32 …`; the second prints one JSON line containing
+   **`"rowCount":5`**. If both do, the live database shot will work.
+
+   > The app itself is never affected by this: it launches `prowin` with its output on a
+   > pipe, not a console, which is why **Link this database** works. Only typing `prowin`
+   > by hand in a console needs the redirect.
 3. **Set the floor to 80% now** — Settings → **Minimum retained margin** → **80%** →
    **Save floor**. Doing it off-camera is what buys you the running time. Section 1
    explains it in one sentence instead of a whole screen visit.

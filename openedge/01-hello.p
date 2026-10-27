@@ -7,16 +7,30 @@
    on it.
 
    Run it from a proenv prompt (the shell the kit's installer sets up), from this
-   directory:
+   directory, REDIRECTING THE OUTPUT:
 
-       prowin -b -p 01-hello.p
+       prowin -b -p 01-hello.p > 01-check.out
+       type 01-check.out
 
-   (-b is batch: no window, output to your terminal. The flags that connect a
-   database - typically `-db <name> -1` - are only needed by 02, not here.)
+   (-b is batch: no window. The flags that connect a database - typically
+   `-db <name> -1` - are only needed by 02, not here.)
 
-   This file has NOT been run in this repository's working copy: OpenEdge is not
-   installed on the machine this project was built on, so it is written to be
-   honest about what it does and is left for the first machine that has a kit.
+   WHY THE REDIRECT IS NOT OPTIONAL, AND WHY IT LOOKS LIKE THE PROGRAM IS BROKEN
+
+   Run this with its output going straight to an interactive console and it fails
+   with a message box, before a single line prints:
+
+       ** Attempt to write with no current output destination. (516)
+
+   Nothing is wrong with the file. In batch mode the AVM has no terminal, so the
+   DISPLAY below has no destination to write its FRAME into and refuses rather
+   than printing nothing quietly. Given a file or a pipe there IS a destination
+   and the same program prints correctly. That is how it was run here - OpenEdge
+   12.8, Windows 11, 27 October 2026 - and the redirect form is the one to use.
+
+   This file HAS been run: with the redirect it prints the three lines below and
+   exits 0. (`openedge\*.out` holds the captured output of these runs and is
+   git-ignored, which is why it is not in the repository.)
    --------------------------------------------------------------------------- */
 
 DEFINE VARIABLE cLine AS CHARACTER NO-UNDO.
@@ -37,6 +51,14 @@ DEFINE FRAME wide-lines
   cDir  FORMAT "x(132)" SKIP
   cNext FORMAT "x(132)"
 WITH FRAME wide-lines WIDTH 140 NO-LABELS.
+
+/* Note this frame is 140 wide and its fields are 132. That is deliberately wider
+   than a default console, and it is the reason the run instructions above insist
+   on a redirect: a frame is a screen region and the AVM will not lay one out
+   against a terminal it does not have in batch mode (error 516), while a file has
+   no width to exceed. The narrow-bandwidth alternative for a program whose output
+   must reach a terminal is PUT UNFORMATTED, which has no frame at all - see
+   06-enquiry-json.p, which writes a 1801-character JSON line that way. */
 
 cLine = "ValueAnchor: the AVM is up. OpenEdge " + PROVERSION
       + " on " + OPSYS + " " + STRING(OS-GETENV("COMPUTERNAME"))

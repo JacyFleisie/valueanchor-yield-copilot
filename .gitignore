@@ -44,6 +44,12 @@ openedge/*.pl
 openedge/SQLExplorer.properties
 openedge/put-test.txt
 
+# Crash reports the AVM drops in the working directory when a program aborts
+# (procore.<pid>: a timestamp, the last action and the ABL call stack). They are
+# a debugging aid, not source, and a failed run must not be able to put one in a
+# commit - `procore.*` is matched anywhere so it is caught wherever you ran from.
+procore.*
+
 # The trained NLU model cache. Rebuilt automatically when the corpus or the
 # owner's confirmed questions change, so it is not worth versioning.
 backend/.model_cache/

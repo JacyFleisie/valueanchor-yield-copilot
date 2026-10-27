@@ -1,8 +1,13 @@
 # OpenEdge in ValueAnchor — what it does, and what you should do
 
-Verified on this machine on 26 October 2026 by running the published `v1.1.0`
-executable against the `openedge/coffee.db` database. Every number below was
-read out of a live process, not remembered.
+Verified on this machine on 26–27 October 2026 by running the published `v1.1.0`
+executable and the ABL programs themselves against the `openedge/coffee.db`
+database. Every number below was read out of a live process, not remembered.
+
+One correction is already folded in, because it cost a recording session: every
+`prowin` command below **redirects its output to a file**. Run bare in a console,
+the batch AVM has no terminal to write a frame into and stops with error 516 —
+see §6 and §5 step 2.
 
 ---
 
@@ -70,7 +75,8 @@ reads as *"assumed"*, not as if the owner had set one.
 | Thing | Value |
 |---|---|
 | OpenEdge install | `C:\Progress\OpenEdge` — **12.8**, `bin\prowin.exe`, `prodb.exe`, `sqlexp.bat`, `proserve.bat`, `_mprshut.exe` |
-| Starter program | `prowin -b -p openedge\01-hello.p` → *"ValueAnchor: the AVM is up. OpenEdge 12.8 on WIN32 DESKTOP-JACY"* |
+| Starter program | `prowin -b -p openedge\01-hello.p > 01-check.out` then `type 01-check.out` → *"ValueAnchor: the AVM is up. OpenEdge 12.8 on WIN32 DESKTOP-JACY, 10/27/2026 18:33:23"* |
+| Why that redirect | A bare console run of the same file fails with error 516 (`Attempt to write with no current output destination`) — see §6 |
 | Database | `openedge/coffee.db` (+ `.b1`/`.d1`), seeded with 5 rows |
 | Rows read | Kloof Street Roasters — Almond croissant, Chicken mayo baguette, Cold brew 500 ml, Flat white, Sourdough loaf |
 | Units on the shelf | 151 |
@@ -88,21 +94,35 @@ Nothing else has to be installed, provisioned, or paid for.
 
 1. **Open a terminal at the repo root** (`Hackathon Project Submission`). The app
    finds `openedge\coffee.db` relative to the working directory, so this matters.
-2. **Confirm the kit answers** (10 seconds, no app involved):
+2. **Confirm the kit answers** (10 seconds, no app involved). Redirect the output —
+   this is the step that trips people up, because without the redirect the AVM stops
+   with a 516 error box and it looks like the install is broken:
 
    ```bash
-   C:\Progress\OpenEdge\bin\prowin.exe -b -p openedge\01-hello.p
+   C:\Progress\OpenEdge\bin\prowin.exe -b -p openedge\01-hello.p > openedge\01-check.out
+   type openedge\01-check.out
    ```
 
-   Expect `OpenEdge 12.8 on WIN32 …`. If this fails, nothing downstream will work —
-   fix that first.
-3. **Confirm the database reads** (also no app involved):
+   Expect:
+
+   ```
+   ValueAnchor: the AVM is up. OpenEdge 12.8 on WIN32 <your-name>, 10/27/2026 18:33:23
+   Program file: openedge/01-hello.p
+   Now run 02-read-customer.p against the demo database.
+   ```
+
+   If this prints, the AVM runs and your PATH is fine. If it pops a message box
+   instead, read §6 before touching anything else.
+3. **Confirm the database reads** (also no app involved — same redirect rule):
 
    ```bash
-   C:\Progress\OpenEdge\bin\prowin.exe -b -db openedge\coffee.db -1 -p openedge\06-enquiry-json.p
+   C:\Progress\OpenEdge\bin\prowin.exe -b -db openedge\coffee.db -1 -p openedge\06-enquiry-json.p > openedge\06-check.out
+   type openedge\06-check.out
    ```
 
-   Expect one JSON line, `"rowCount":5`.
+   Expect one JSON line, `"rowCount":5`. This one prints with `PUT` and no frame, so
+   it has no frame width to exceed; it was verified with the redirect above, which is
+   the form these docs use for every program in the folder.
 4. **Start the app from the same terminal**, so the working directory is the repo root:
 
    ```bash
@@ -131,9 +151,12 @@ sqlexp -char -db coffee -S 5123 -H localhost -infile 03-coffee-ddl.sql -outfile 
 #      mandatory — without them the table is created in your Windows user's schema
 #      (ABL cannot see it) or silently rolled back.
 _mprshut                                              # 3. stop the server — answer 2
-prowin -b -db coffee -1 -p 04-seed-coffee.p            # 4. five lines in
-prowin -b -db coffee -1 -p 06-enquiry-json.p           # 5. prove the read
+prowin -b -db coffee -1 -p 04-seed-coffee.p > 04.out  # 4. five lines in
+prowin -b -db coffee -1 -p 06-enquiry-json.p > 06.out  # 5. prove the read
 ```
+
+Every `prowin` line here redirects its output, and the run is followed by `type`.
+That is the rule for the whole folder, not a stylistic choice — step 2 explains why.
 
 Step 3 matters: `04`/`05`/`06` open the database **single-user** and will refuse
 with *"in use in multi-user mode"* while `proserve` holds it.
@@ -205,6 +228,7 @@ than implying it works.
 | *'coffee' is being served by another process…* | `proserve` still running | `_mprshut`, answer `2` |
 | *…has the coffee_item table but no rows…* | DDL ran, seeder did not | `prowin -b -db coffee -1 -p 04-seed-coffee.p` |
 | *The AVM did not finish… within 90 seconds* | first cold start on a slow machine | Retry once; raise `OPENEDGE_TIMEOUT` only if it is genuinely slow |
+| **A message box reading** *Attempt to write with no current output destination. (516)*, and nothing printed | Batch mode gives the AVM no terminal, so the program's `DISPLAY` has no destination to write its frame into. It is not a broken install, not a PATH problem, and not a missing database. | Redirect: `prowin -b -p openedge\01-hello.p > 01-check.out` then `type 01-check.out`. Same for 02, 04 and 05. (Untested: whether a `PUT`-only program such as 06 survives a bare console run here — it was verified redirected, and every command in these docs redirects.) |
 
 A refusal never shows an empty table — an empty read would look like "nothing to
 worry about", which is the dangerous lie.
