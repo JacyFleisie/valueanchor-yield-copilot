@@ -16,5 +16,5 @@ symspellpy==6.10.0
 # this project makes is that the numbers are right, and the planner is the code
 # that decides them, so its coverage is the number worth watching.
 pytest==8.4.2
-pytest-cov==6.2.1
+pytest-cov==7.1.0
 coverage==7.10.6
