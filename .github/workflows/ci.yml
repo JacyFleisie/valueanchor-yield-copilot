@@ -80,7 +80,7 @@ jobs:
         # artifact storage quota must not turn a passing suite red.
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-coverage
           path: backend/coverage.xml
